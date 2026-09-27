@@ -1,0 +1,12 @@
+# First real use of read_file - step toward self-hosting
+# This program reads another .nv file and prints its content
+
+print "Reading examples/hello.nv ..."
+print ""
+
+content = read_file("../examples/hello.nv")
+print content
+
+print ""
+print "File length:"
+print len(content)
