@@ -1,32 +1,35 @@
-# Nova Interpreter (Bootstrap)
+# Nova Interpreter (v0.3)
 
-This is the first bootstrap interpreter for the Nova language.
+Bootstrap interpreter for the Nova language written in Python.
 
-It is written in Python and currently supports a very small subset of the language:
+## Supported Features
 
 - Comments (`#`)
 - Variables
 - `print`
-- Basic arithmetic (`+`, `-`, `*`, `/`)
-- Simple expressions
+- Arithmetic (`+ - * /`) and comparisons (`== != < > <= >=`)
+- Lists `[1, 2, 3]`
+- Maps `{ key: value }`
+- `if` / `else` / `end`
+- `for i from 1 to 10` / `end`
+- `while condition` / `end`
+- `break`
+- Functions (`fun name(params)` ... `return` ... `end`)
 
 ## How to run
 
 ```bash
-python nova.py examples/hello.nv
+python nova.py ../examples/hello.nv
+python nova.py ../examples/variables.nv
+python nova.py ../examples/complete.nv
 ```
 
-or
+## Notes
 
-```bash
-python nova.py path/to/your/file.nv
-```
+This is still a bootstrap implementation. The goal is to keep growing the language while keeping the interpreter simple and easy to understand.
 
-## Current limitations
-
-- No functions yet
-- No if / for / while yet
-- No lists or maps yet
-- Very basic error handling
-
-This is intentionally minimal so we can grow the language step by step.
+Next improvements planned:
+- Proper operator precedence and parentheses
+- Better error messages with context
+- String interpolation
+- Modules
