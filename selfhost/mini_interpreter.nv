@@ -1,0 +1,14 @@
+# Mini Nova Interpreter written in Nova (first step toward self-hosting)
+# This version is extremely limited on purpose.
+# It can only handle very simple print statements for now.
+
+print "Nova Mini Interpreter (self-host step 1)"
+print "-------------------------------------"
+print "This program is written in Nova."
+print "It is the first building block toward a full self-hosted interpreter."
+print ""
+print "Next steps:"
+print "1. Add ability to read a .nv file"
+print "2. Parse simple statements"
+print "3. Evaluate expressions"
+print "4. Grow until it can run itself"
