@@ -1,4 +1,4 @@
-# Nova Language Specification (draft v0.2)
+# Nova Language Specification (v0.3)
 
 ## Vision
 
@@ -14,17 +14,17 @@ It is designed to be **significantly easier to learn and use than Python**, whil
 ## Design Principles
 
 1. **Minimum keywords and symbols**
-2. **Zero boilerplate** — as little code as possible to do useful things
+2. **Zero boilerplate**
 3. **One language** for frontend, backend, AI and scripts
 4. **Extreme readability**
-5. **Optional and smart typing**
+5. **Optional and smart typing** (future)
 
 ## File extensions
 
 - `.nv`
 - `.nova`
 
-## Basic Syntax (proposal)
+## Current Features (v0.3)
 
 ### Comments
 ```nova
@@ -32,7 +32,6 @@ It is designed to be **significantly easier to learn and use than Python**, whil
 ```
 
 ### Variables
-No need for `let`, `var` or `const`.
 ```nova
 name = "Nova"
 age = 1
@@ -45,11 +44,34 @@ print "Hello, world!"
 print name
 ```
 
+### Arithmetic & Comparisons
+```nova
+x = 10 + 5 * 2
+if x >= 20
+  print "big"
+end
+```
+
+### Lists
+```nova
+numbers = [1, 2, 3, 4]
+print numbers
+```
+
+### Maps
+```nova
+person = { name: "Nova", version: 0.3 }
+print person
+```
+
 ### Functions
 ```nova
 fun add(a, b)
   return a + b
 end
+
+result = add(3, 4)
+print result
 ```
 
 ### Conditionals
@@ -73,13 +95,7 @@ while true
 end
 ```
 
-### Data structures
-```nova
-list = [1, 2, 3]
-map = { name: "Nova", version: 0.2 }
-```
-
-## Keywords (English)
+## Keywords
 
 | Keyword   | Purpose              |
 |-----------|----------------------|
@@ -97,14 +113,23 @@ map = { name: "Nova", version: 0.2 }
 | `true`    | Boolean true         |
 | `false`   | Boolean false        |
 
-## Next steps
+## How to run
 
-- Finalize keywords and operators
-- Type system
-- Modules and imports
-- AI / model training integration
-- Runtime / interpreter
+```bash
+cd interpreter
+python nova.py ../examples/complete.nv
+```
+
+## Next planned features
+
+- Better operator precedence & parentheses
+- String interpolation
+- Modules / import
+- Classes / objects
+- Native AI training helpers
+- Web server & UI primitives
+- Compiled backend (future)
 
 ---
 
-This is a living draft. Everything can change.
+This is a living draft.
