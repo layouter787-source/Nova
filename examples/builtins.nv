@@ -1,0 +1,31 @@
+# Test new builtins (v0.4)
+
+print "=== Builtins demo ==="
+
+# len
+print len("Nova")
+print len([1, 2, 3, 4])
+
+# indexing
+nums = [10, 20, 30]
+print nums[0]
+print nums[2]
+
+# split + join
+text = "hello world from nova"
+parts = split(text, " ")
+print parts
+print join(parts, "-")
+
+# append
+list = [1, 2]
+append(list, 3)
+print list
+
+# type
+print type(42)
+print type("hi")
+print type([1, 2])
+print type({a: 1})
+
+print "=== done ==="
