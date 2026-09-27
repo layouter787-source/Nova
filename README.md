@@ -17,18 +17,38 @@
 
 ## Current Status
 
-The language is in early design phase.
+Early design + first bootstrap interpreter.
 
-**Keywords are in English** (as decided).
+**Keywords are in English.**
+
+### What works right now
+
+- `print`
+- Variables
+- Basic arithmetic (`+ - * /`)
+- Comments
+
+### How to run examples
+
+```bash
+cd interpreter
+python nova.py ../examples/hello.nv
+python nova.py ../examples/variables.nv
+```
 
 ## Repository Structure
 
 - `SPEC.md` — Language specification (living draft)
 - `examples/` — Example programs
+- `interpreter/` — Bootstrap interpreter written in Python
 
-## How to Contribute
+## Next planned features
 
-This repository is the official home of the specification, examples, interpreter/compiler and documentation of Nova.
+- `if` / `else`
+- `for` / `while`
+- Functions (`fun`)
+- Lists and maps
+- Better error messages
 
 ---
 
