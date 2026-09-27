@@ -1,92 +1,110 @@
-# Especificação da Linguagem Nova (rascunho v0.1)
+# Nova Language Specification (draft v0.2)
 
-## Visão
+## Vision
 
-Nova é uma linguagem de programação ultra-simples, full-stack e de alta produtividade.
-Foi desenhada para ser **significativamente mais fácil de aprender e usar do que Python**, mantendo poder suficiente para:
+Nova is an ultra-simple, full-stack, high-productivity programming language.
+It is designed to be **significantly easier to learn and use than Python**, while remaining powerful enough for:
 
-- Treinar modelos de IA
-- Criar sites e aplicações web
-- Programas desktop
-- Scripts e automação
-- Qualquer outra coisa
+- Training AI models
+- Building websites and web apps
+- Desktop programs
+- Scripts and automation
+- Anything else
 
-## Princípios de design
+## Design Principles
 
-1. **Mínimo de palavras-chave e símbolos**
-2. **Zero boilerplate** — o menos código possível para fazer coisas úteis
-3. **Uma única linguagem** para frontend, backend, AI e scripts
-4. **Legibilidade extrema**
-5. **Tipagem opcional e inteligente**
+1. **Minimum keywords and symbols**
+2. **Zero boilerplate** — as little code as possible to do useful things
+3. **One language** for frontend, backend, AI and scripts
+4. **Extreme readability**
+5. **Optional and smart typing**
 
-## Extensões de ficheiro
+## File extensions
 
 - `.nv`
 - `.nova`
 
-## Sintaxe básica (proposta)
+## Basic Syntax (proposal)
 
-### Comentários
+### Comments
 ```nova
-# isto é um comentário
+# this is a comment
 ```
 
-### Variáveis
-Não é necessário `let`, `var` ou `const`.
+### Variables
+No need for `let`, `var` or `const`.
 ```nova
-nome = "Nova"
-idade = 1
-ativo = verdadeiro
+name = "Nova"
+age = 1
+native = true
 ```
 
-### Saída
+### Output
 ```nova
-diz "Olá, mundo!"
-diz nome
+print "Hello, world!"
+print name
 ```
 
-### Funções
+### Functions
 ```nova
-fun somar(a, b)
-  retorna a + b
-fim
+fun add(a, b)
+  return a + b
+end
 ```
 
-### Condicionais
+### Conditionals
 ```nova
-se idade > 18
-  diz "Adulto"
-senão
-  diz "Menor"
-fim
+if age > 18
+  print "Adult"
+else
+  print "Minor"
+end
 ```
 
 ### Loops
 ```nova
-para i de 1 a 10
-  diz i
-fim
+for i from 1 to 10
+  print i
+end
 
-enquanto verdadeiro
-  diz "loop"
-  parar
-fim
+while true
+  print "loop"
+  break
+end
 ```
 
-### Estruturas de dados
+### Data structures
 ```nova
-lista = [1, 2, 3]
-mapa = { nome: "Nova", versao: 0.1 }
+list = [1, 2, 3]
+map = { name: "Nova", version: 0.2 }
 ```
 
-## Próximos passos
+## Keywords (English)
 
-- Definir palavras-chave finais (português vs inglês)
-- Sistema de tipos
-- Módulos e importação
-- Integração com AI / treino de modelos
-- Runtime / interpretador
+| Keyword   | Purpose              |
+|-----------|----------------------|
+| `print`   | Output               |
+| `fun`     | Define function      |
+| `return`  | Return value         |
+| `end`     | End block            |
+| `if`      | Conditional          |
+| `else`    | Else branch          |
+| `for`     | For loop             |
+| `from`    | Range start          |
+| `to`      | Range end            |
+| `while`   | While loop           |
+| `break`   | Exit loop            |
+| `true`    | Boolean true         |
+| `false`   | Boolean false        |
+
+## Next steps
+
+- Finalize keywords and operators
+- Type system
+- Modules and imports
+- AI / model training integration
+- Runtime / interpreter
 
 ---
 
-Este é um rascunho vivo. Tudo pode mudar.
+This is a living draft. Everything can change.
