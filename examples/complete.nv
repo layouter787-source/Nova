@@ -1,0 +1,58 @@
+# Complete example showing most features of Nova v0.3
+
+print "=== Nova Language Demo ==="
+
+# Variables and arithmetic
+x = 10
+y = 5
+print "x + y ="
+print x + y
+
+# Lists
+numbers = [1, 2, 3, 4, 5]
+print "List:"
+print numbers
+
+# Maps
+person = { name: "Nova", version: 0.3 }
+print "Map:"
+print person
+
+# If / else
+age = 20
+if age >= 18
+  print "Adult"
+else
+  print "Minor"
+end
+
+# For loop
+print "Counting:"
+for i from 1 to 5
+  print i
+end
+
+# While loop
+print "While loop:"
+count = 3
+while count > 0
+  print count
+  count = count - 1
+end
+
+# Functions
+fun greet(name)
+  print "Hello,"
+  print name
+end
+
+fun add(a, b)
+  return a + b
+end
+
+greet("World")
+result = add(7, 8)
+print "7 + 8 ="
+print result
+
+print "=== Demo finished ==="
