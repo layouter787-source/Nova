@@ -1,28 +1,35 @@
 # Nova
 
-**Nova** (extensão `.nv` / `.nova`) é uma linguagem de programação ultra-simples e poderosa, desenhada para ser **muito mais fácil de aprender que Python**, mas capaz de fazer **tudo**:
+**Nova** (extension `.nv` / `.nova`) is an ultra-simple and powerful programming language, designed to be **much easier to learn than Python**, while being capable of doing **everything**:
 
-- Treinar modelos de Inteligência Artificial
-- Criar sites e aplicações full-stack
-- Programas desktop e scripts
-- Qualquer outra coisa
+- Train AI models
+- Create websites and full-stack applications
+- Desktop programs and scripts
+- Anything else
 
-## Objetivos principais
+## Main Goals
 
-- Sintaxe extremamente simples e legível
+- Extremely simple and readable syntax
 - Zero boilerplate
-- Uma única linguagem para frontend, backend, AI e scripts
-- Alta produtividade com mínimo de código
-- Foco em redução de tempo de programação e custos de treino de modelos
+- One single language for frontend, backend, AI and scripts
+- High productivity with minimal code
+- Focus on reducing programming time and AI training costs
 
-## Estado atual
+## Current Status
 
-A linguagem está em fase inicial de design.
+The language is in early design phase.
 
-## Como contribuir
+**Keywords are in English** (as decided).
 
-Este repositório será o lar oficial da especificação, exemplos, interpretador/compilador e documentação da Nova.
+## Repository Structure
+
+- `SPEC.md` — Language specification (living draft)
+- `examples/` — Example programs
+
+## How to Contribute
+
+This repository is the official home of the specification, examples, interpreter/compiler and documentation of Nova.
 
 ---
 
-Criado com a ajuda do Grok.
+Created with help from Grok.
