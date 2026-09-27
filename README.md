@@ -7,48 +7,57 @@
 - Desktop programs and scripts
 - Anything else
 
-## Main Goals
+## Current Status — v0.3
 
-- Extremely simple and readable syntax
-- Zero boilerplate
-- One single language for frontend, backend, AI and scripts
-- High productivity with minimal code
-- Focus on reducing programming time and AI training costs
-
-## Current Status
-
-Early design + first bootstrap interpreter.
-
-**Keywords are in English.**
-
-### What works right now
+Working bootstrap interpreter with the following features:
 
 - `print`
 - Variables
-- Basic arithmetic (`+ - * /`)
-- Comments
+- Arithmetic (`+ - * /`) and comparisons
+- Lists and Maps
+- `if` / `else`
+- `for` / `while` + `break`
+- Functions (`fun` + `return`)
 
-### How to run examples
+## Quick Start
 
 ```bash
 cd interpreter
 python nova.py ../examples/hello.nv
 python nova.py ../examples/variables.nv
+python nova.py ../examples/complete.nv
 ```
 
 ## Repository Structure
 
-- `SPEC.md` — Language specification (living draft)
+- `SPEC.md` — Language specification
 - `examples/` — Example programs
-- `interpreter/` — Bootstrap interpreter written in Python
+- `interpreter/` — Bootstrap interpreter (Python)
 
-## Next planned features
+## Example
 
-- `if` / `else`
-- `for` / `while`
-- Functions (`fun`)
-- Lists and maps
-- Better error messages
+```nova
+fun greet(name)
+  print "Hello,"
+  print name
+end
+
+for i from 1 to 3
+  greet("Nova")
+end
+
+if 10 > 5
+  print "Math works"
+end
+```
+
+## Next Goals
+
+- Better expression parsing (parentheses, precedence)
+- String interpolation
+- Modules
+- Native support for AI training pipelines
+- Web & UI primitives
 
 ---
 
