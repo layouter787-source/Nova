@@ -1,8 +1,20 @@
 #!/usr/bin/env python3
 """
-Nova Language - Bootstrap Interpreter (v0.4)
-Now with file I/O, better lists/strings, indexing and more builtins
-to unlock the path to self-hosting.
+Nova Language - Bootstrap Interpreter (v0.5)
+
+Changes since v0.4:
+  - FIX: parenthesized expressions like (2 + 3) * 4 now work (were silently
+    crashing with "Cannot evaluate expression").
+  - FIX: repeated / trailing unary minus (e.g. "5 - -3", "x = -y") no longer
+    crashes with a TypeError.
+  - FIX: bareword map keys ({ x: 1 }) were being looked up as variables
+    instead of treated as the literal string key "x" - silently corrupted
+    any map literal whose key name collided with an existing variable.
+  - NEW: `elif` support in `if` statements.
+  - NEW: logical `and`, `or`, `not` operators.
+  - NEW: inline comments (`x = 5  # like this`), not just full-line ones.
+  - NEW: string escapes (\\n, \\t, \\", \\\\) inside string literals.
+  - NEW: index assignment (`list[0] = x`, `map["k"] = x`).
 """
 
 import sys
@@ -17,6 +29,18 @@ class ReturnValue(Exception):
 
 class BreakException(Exception):
     pass
+
+
+BLOCK_STARTERS = ("fun ", "if ", "for ", "while ")
+
+ESCAPE_MAP = {
+    "n": "\n",
+    "t": "\t",
+    "r": "\r",
+    '"': '"',
+    "'": "'",
+    "\\": "\\",
+}
 
 
 class NovaInterpreter:
@@ -47,14 +71,35 @@ class NovaInterpreter:
         lines = source.splitlines()
         self.execute_block(lines, 0, len(lines))
 
+    # ── Comments ───────────────────────────────────────────────
+
+    def strip_comment(self, line: str) -> str:
+        """Remove a trailing '# ...' comment, ignoring '#' inside strings."""
+        in_string = False
+        string_char = None
+        for i, c in enumerate(line):
+            if in_string:
+                if c == "\\":
+                    continue
+                if c == string_char:
+                    in_string = False
+            elif c in '"\'':
+                in_string = True
+                string_char = c
+            elif c == "#":
+                return line[:i]
+        return line
+
+    # ── Block execution ────────────────────────────────────────
+
     def execute_block(self, lines: List[str], start: int, end: int) -> int:
         i = start
         while i < end:
             raw = lines[i]
-            line = raw.strip()
+            line = self.strip_comment(raw).strip()
             self.line_number = i + 1
 
-            if not line or line.startswith("#"):
+            if not line:
                 i += 1
                 continue
 
@@ -92,7 +137,7 @@ class NovaInterpreter:
         return end
 
     def parse_function(self, lines, start, end):
-        header = lines[start].strip()
+        header = self.strip_comment(lines[start]).strip()
         match = re.match(r"fun\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*)\)", header)
         if not match:
             raise Exception(f"Invalid function definition: {header}")
@@ -104,8 +149,8 @@ class NovaInterpreter:
         i = start + 1
         depth = 1
         while i < end:
-            line = lines[i].strip()
-            if line.startswith(("fun ", "if ", "for ", "while ")):
+            line = self.strip_comment(lines[i]).strip()
+            if line.startswith(BLOCK_STARTERS):
                 depth += 1
             elif line == "end":
                 depth -= 1
@@ -119,41 +164,53 @@ class NovaInterpreter:
         return i + 1
 
     def parse_if(self, lines, start, end):
-        condition = lines[start].strip()[3:].strip()
-        cond_value = self.evaluate(condition)
+        """Supports if / elif (any number) / else / end."""
+        condition = self.strip_comment(lines[start]).strip()[3:].strip()
+        branches = []  # list of (condition_or_None, block_lines)
+        current_block: List[str] = []
+        branches.append((condition, current_block))
 
-        then_block, else_block = [], []
         i = start + 1
         depth = 1
-        in_else = False
+        closed = False
         while i < end:
-            line = lines[i].strip()
-            if line.startswith(("fun ", "if ", "for ", "while ")):
-                depth += 1
-            elif line == "else" and depth == 1:
-                in_else = True
+            raw_line = lines[i]
+            line = self.strip_comment(raw_line).strip()
+
+            if depth == 1 and line.startswith("elif "):
+                current_block = []
+                branches.append((line[5:].strip(), current_block))
                 i += 1
                 continue
+            if depth == 1 and line == "else":
+                current_block = []
+                branches.append((None, current_block))
+                i += 1
+                continue
+
+            if line.startswith(BLOCK_STARTERS):
+                depth += 1
             elif line == "end":
                 depth -= 1
                 if depth == 0:
+                    i += 1
+                    closed = True
                     break
-            if in_else:
-                else_block.append(lines[i])
-            else:
-                then_block.append(lines[i])
+
+            current_block.append(raw_line)
             i += 1
-        if depth != 0:
+
+        if not closed:
             raise Exception("if statement is missing 'end'")
 
-        if cond_value:
-            self.execute_block(then_block, 0, len(then_block))
-        else:
-            self.execute_block(else_block, 0, len(else_block))
-        return i + 1
+        for cond, block in branches:
+            if cond is None or self.evaluate(cond):
+                self.execute_block(block, 0, len(block))
+                break
+        return i
 
     def parse_for(self, lines, start, end):
-        header = lines[start].strip()
+        header = self.strip_comment(lines[start]).strip()
         match = re.match(r"for\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+from\s+(.+)\s+to\s+(.+)", header)
         if not match:
             raise Exception(f"Invalid for loop: {header}")
@@ -165,8 +222,8 @@ class NovaInterpreter:
         i = start + 1
         depth = 1
         while i < end:
-            line = lines[i].strip()
-            if line.startswith(("fun ", "if ", "for ", "while ")):
+            line = self.strip_comment(lines[i]).strip()
+            if line.startswith(BLOCK_STARTERS):
                 depth += 1
             elif line == "end":
                 depth -= 1
@@ -186,13 +243,13 @@ class NovaInterpreter:
         return i + 1
 
     def parse_while(self, lines, start, end):
-        condition = lines[start].strip()[6:].strip()
+        condition = self.strip_comment(lines[start]).strip()[6:].strip()
         body = []
         i = start + 1
         depth = 1
         while i < end:
-            line = lines[i].strip()
-            if line.startswith(("fun ", "if ", "for ", "while ")):
+            line = self.strip_comment(lines[i]).strip()
+            if line.startswith(BLOCK_STARTERS):
                 depth += 1
             elif line == "end":
                 depth -= 1
@@ -221,34 +278,58 @@ class NovaInterpreter:
             self.evaluate(line)
             return
 
-        # Assignment
+        # Index / key assignment: container[index] = expr
+        idx_assign = re.match(r"^(.+)\[(.+)\]\s*(?<![!<>=])=(?!=)\s*(.+)$", line)
+        if idx_assign:
+            container = self.evaluate(idx_assign.group(1).strip())
+            index = self.evaluate(idx_assign.group(2).strip())
+            value = self.evaluate(idx_assign.group(3).strip())
+            try:
+                container[index] = value
+                return
+            except Exception as e:
+                raise Exception(f"Cannot assign to index: {e}")
+
+        # Plain assignment
         if re.search(r"(?<![!<>=])=(?!=)", line):
             parts = re.split(r"(?<![!<>=])=(?!=)", line, maxsplit=1)
             if len(parts) == 2:
                 left = parts[0].strip()
                 expr = parts[1].strip()
 
-                # Support list index assignment later if needed
                 if re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", left):
                     self.variables[left] = self.evaluate(expr)
                     return
 
         raise Exception(f"Unknown statement: {line}")
 
+    # ── Expression evaluation ─────────────────────────────────
+
     def evaluate(self, expr: str) -> Any:
         expr = expr.strip()
         if not expr:
             return None
 
+        # Fully-parenthesized grouping: (expr)
+        stripped = self.strip_outer_parens(expr)
+        if stripped != expr:
+            return self.evaluate(stripped)
+
         # String literal
-        if (expr.startswith('"') and expr.endswith('"')) or (expr.startswith("'") and expr.endswith("'")):
-            return expr[1:-1]
+        if (expr.startswith('"') and expr.endswith('"') and len(expr) >= 2) or (
+            expr.startswith("'") and expr.endswith("'") and len(expr) >= 2
+        ):
+            return self.decode_string(expr[1:-1])
 
         # Boolean
         if expr == "true":
             return True
         if expr == "false":
             return False
+
+        # Logical not
+        if expr == "not" or expr.startswith("not "):
+            return not self.evaluate(expr[3:].strip())
 
         # List literal
         if expr.startswith("[") and expr.endswith("]"):
@@ -267,7 +348,15 @@ class NovaInterpreter:
                 if ":" not in pair:
                     raise Exception(f"Invalid map pair: {pair}")
                 k, v = pair.split(":", 1)
-                result[self.evaluate(k.strip())] = self.evaluate(v.strip())
+                k = k.strip()
+                # Bareword keys (name: 1) are literal string keys, like in
+                # every other language with object-literal syntax - they
+                # must NOT be looked up as variables.
+                if re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", k):
+                    key = k
+                else:
+                    key = self.evaluate(k)
+                result[key] = self.evaluate(v.strip())
             return result
 
         # Indexing: something[index]
@@ -310,6 +399,22 @@ class NovaInterpreter:
         return self.evaluate_expression(expr)
 
     def evaluate_expression(self, expr: str) -> Any:
+        # Logical operators (lowest precedence)
+        parts = self.split_by_op(expr, "or")
+        if len(parts) > 1:
+            result = False
+            for p in parts:
+                if self.evaluate(p):
+                    result = True
+            return result
+
+        parts = self.split_by_op(expr, "and")
+        if len(parts) > 1:
+            for p in parts:
+                if not self.evaluate(p):
+                    return False
+            return True
+
         for op in ["==", "!=", "<=", ">=", "<", ">"]:
             parts = self.split_by_op(expr, op)
             if len(parts) > 1:
@@ -342,17 +447,61 @@ class NovaInterpreter:
 
         raise Exception(f"Cannot evaluate expression: {expr}")
 
+    # ── Helpers ────────────────────────────────────────────────
+
+    def strip_outer_parens(self, expr: str) -> str:
+        """If expr is fully wrapped in one matching pair of parens, unwrap it."""
+        if not (expr.startswith("(") and expr.endswith(")")):
+            return expr
+        depth = 0
+        in_string = False
+        string_char = None
+        for i, c in enumerate(expr):
+            if in_string:
+                if c == string_char:
+                    in_string = False
+                continue
+            if c in '"\'':
+                in_string = True
+                string_char = c
+                continue
+            if c == "(":
+                depth += 1
+            elif c == ")":
+                depth -= 1
+                if depth == 0 and i != len(expr) - 1:
+                    return expr  # closes early -> not a single wrapping group
+        return expr[1:-1].strip()
+
+    def decode_string(self, s: str) -> str:
+        out = []
+        i = 0
+        while i < len(s):
+            c = s[i]
+            if c == "\\" and i + 1 < len(s) and s[i + 1] in ESCAPE_MAP:
+                out.append(ESCAPE_MAP[s[i + 1]])
+                i += 2
+            else:
+                out.append(c)
+                i += 1
+        return "".join(out)
+
     def split_by_op(self, expr: str, op: str) -> List[str]:
         parts = []
         current = ""
         depth = 0
         in_string = False
         string_char = None
+        is_word_op = op.isalpha()
         i = 0
         while i < len(expr):
             c = expr[i]
             if in_string:
                 current += c
+                if c == "\\" and i + 1 < len(expr):
+                    current += expr[i + 1]
+                    i += 2
+                    continue
                 if c == string_char:
                     in_string = False
             elif c in '"\'':
@@ -365,7 +514,25 @@ class NovaInterpreter:
             elif c in ")]}":
                 depth -= 1
                 current += c
-            elif depth == 0 and expr[i:i+len(op)] == op:
+            elif (
+                depth == 0
+                and expr[i:i + len(op)] == op
+                and (
+                    not is_word_op
+                    or (
+                        (i == 0 or not (expr[i - 1].isalnum() or expr[i - 1] == "_"))
+                        and (
+                            i + len(op) >= len(expr)
+                            or not (expr[i + len(op)].isalnum() or expr[i + len(op)] == "_")
+                        )
+                    )
+                )
+            ):
+                if op in ("+", "-") and current.strip() == "":
+                    # unary +/- : keep it attached to the operand, don't split
+                    current += c
+                    i += 1
+                    continue
                 parts.append(current.strip())
                 current = ""
                 i += len(op) - 1

@@ -1,4 +1,4 @@
-# Nova Language Specification (v0.3)
+# Nova Language Specification (v0.5)
 
 ## Vision
 
@@ -24,11 +24,12 @@ It is designed to be **significantly easier to learn and use than Python**, whil
 - `.nv`
 - `.nova`
 
-## Current Features (v0.3)
+## Current Features (v0.5)
 
 ### Comments
 ```nova
-# this is a comment
+# full-line comment
+x = 5  # inline comment too
 ```
 
 ### Variables
@@ -44,25 +45,47 @@ print "Hello, world!"
 print name
 ```
 
-### Arithmetic & Comparisons
+### Arithmetic, comparisons & grouping
 ```nova
-x = 10 + 5 * 2
+x = (10 + 5) * 2
 if x >= 20
   print "big"
 end
+
+y = 5 - -3   # unary minus works everywhere
+```
+
+### Logical operators
+```nova
+if age >= 18 and not is_banned
+  print "welcome"
+end
+
+if role == "admin" or role == "owner"
+  print "has access"
+end
+```
+
+### Strings
+```nova
+print "line one\nline two\ttabbed"
 ```
 
 ### Lists
 ```nova
 numbers = [1, 2, 3, 4]
+numbers[0] = 99
 print numbers
 ```
 
 ### Maps
 ```nova
-person = { name: "Nova", version: 0.3 }
+person = { name: "Nova", version: 0.5 }
+person["version"] = 0.6
 print person
 ```
+Bareword keys (`name:`) are always literal string keys — they are never
+looked up as variables, even if a variable with that name exists.
 
 ### Functions
 ```nova
@@ -78,6 +101,8 @@ print result
 ```nova
 if age > 18
   print "Adult"
+elif age == 18
+  print "Just turned adult"
 else
   print "Minor"
 end
@@ -104,6 +129,7 @@ end
 | `return`  | Return value         |
 | `end`     | End block            |
 | `if`      | Conditional          |
+| `elif`    | Else-if branch       |
 | `else`    | Else branch          |
 | `for`     | For loop             |
 | `from`    | Range start          |
@@ -112,6 +138,9 @@ end
 | `break`   | Exit loop            |
 | `true`    | Boolean true         |
 | `false`   | Boolean false        |
+| `and`     | Logical AND          |
+| `or`      | Logical OR           |
+| `not`     | Logical NOT          |
 
 ## How to run
 
@@ -122,7 +151,6 @@ python nova.py ../examples/complete.nv
 
 ## Next planned features
 
-- Better operator precedence & parentheses
 - String interpolation
 - Modules / import
 - Classes / objects
