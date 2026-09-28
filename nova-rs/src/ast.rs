@@ -24,6 +24,7 @@ pub enum Expr {
     Map(Vec<(Expr, Expr)>),
     Var(String),
     Index(Box<Expr>, Box<Expr>),
+    Field(Box<Expr>, String),
     Call(String, Vec<Expr>),
     Neg(Box<Expr>),
     Not(Box<Expr>),
@@ -37,6 +38,12 @@ pub struct FunDef {
     pub name: String,
     pub params: Vec<String>,
     pub body: Vec<Stmt>,
+}
+
+#[derive(Debug)]
+pub struct StructDef {
+    pub name: String,
+    pub fields: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +61,8 @@ pub enum StmtKind {
     For(String, Expr, Expr, Vec<Stmt>),
     While(Expr, Vec<Stmt>),
     Fun(Rc<FunDef>),
+    Struct(Rc<StructDef>),
+    Import(String),
     Return(Option<Expr>),
     Break,
 }
