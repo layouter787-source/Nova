@@ -2,24 +2,24 @@
 """
 Nova Language - Bootstrap Interpreter (v0.5)
 
-Changes since v0.4:
-  - FIX: parenthesized expressions like (2 + 3) * 4 now work (were silently
-    crashing with "Cannot evaluate expression").
-  - FIX: repeated / trailing unary minus (e.g. "5 - -3", "x = -y") no longer
-    crashes with a TypeError.
-  - FIX: bareword map keys ({ x: 1 }) were being looked up as variables
-    instead of treated as the literal string key "x" - silently corrupted
-    any map literal whose key name collided with an existing variable.
-  - NEW: `elif` support in `if` statements.
-  - NEW: logical `and`, `or`, `not` operators.
-  - NEW: inline comments (`x = 5  # like this`), not just full-line ones.
-  - NEW: string escapes (\\n, \\t, \\", \\\\) inside string literals.
-  - NEW: index assignment (`list[0] = x`, `map["k"] = x`).
+Changelog v0.5 (correctness pass):
+  - Real tokenizer + recursive-descent parser for expressions.
+    Fixes several bugs from v0.4:
+      * Parentheses for grouping now actually work: (2 + 3) * 4
+      * Unary minus now works: -x, 3 * -2, -f(x)
+      * Correct operator precedence: == != <= >= < >  <  + -  <  * /
+      * Chained/nested indexing works: matrix[i][j]
+      * Index assignment now works: list[0] = 5, matrix[i][j] = 1
+  - print now renders Nova values (true/false/null) instead of Python's
+    True/False/None.
+  - str(x) uses the same Nova-style rendering.
+  - '+' with a string operand now does string concatenation
+    (e.g. "score: " + 5 works, instead of crashing).
 """
 
 import sys
 import re
-from typing import Any, List, Dict, Tuple
+from typing import Any, List, Dict, Tuple, Optional
 
 
 class ReturnValue(Exception):
@@ -31,17 +31,219 @@ class BreakException(Exception):
     pass
 
 
-BLOCK_STARTERS = ("fun ", "if ", "for ", "while ")
+class NovaError(Exception):
+    pass
 
-ESCAPE_MAP = {
-    "n": "\n",
-    "t": "\t",
-    "r": "\r",
-    '"': '"',
-    "'": "'",
-    "\\": "\\",
-}
 
+# ───────────────────────── Tokenizer ─────────────────────────
+
+TOKEN_SPEC = [
+    ("FLOAT", r"\d+\.\d+"),
+    ("INT", r"\d+"),
+    ("STRING", r'"[^"]*"|\'[^\']*\''),
+    ("EQEQ", r"=="),
+    ("NEQ", r"!="),
+    ("LE", r"<="),
+    ("GE", r">="),
+    ("LT", r"<"),
+    ("GT", r">"),
+    ("PLUS", r"\+"),
+    ("MINUS", r"-"),
+    ("STAR", r"\*"),
+    ("SLASH", r"/"),
+    ("LPAREN", r"\("),
+    ("RPAREN", r"\)"),
+    ("LBRACK", r"\["),
+    ("RBRACK", r"\]"),
+    ("LBRACE", r"\{"),
+    ("RBRACE", r"\}"),
+    ("COMMA", r","),
+    ("COLON", r":"),
+    ("IDENT", r"[a-zA-Z_][a-zA-Z0-9_]*"),
+    ("SKIP", r"\s+"),
+    ("MISMATCH", r"."),
+]
+
+MASTER_REGEX = re.compile("|".join(f"(?P<{name}>{pattern})" for name, pattern in TOKEN_SPEC))
+
+
+class Tokenizer:
+    def __init__(self, text: str):
+        self.text = text
+
+    def tokenize(self) -> List[Tuple[str, Any]]:
+        tokens = []
+        for m in MASTER_REGEX.finditer(self.text):
+            kind = m.lastgroup
+            value: Any = m.group()
+            if kind == "SKIP":
+                continue
+            if kind == "MISMATCH":
+                raise NovaError(f"Unexpected character: {value!r}")
+            if kind == "STRING":
+                value = value[1:-1]
+            elif kind == "INT":
+                value = int(value)
+            elif kind == "FLOAT":
+                value = float(value)
+            tokens.append((kind, value))
+        return tokens
+
+
+# ───────────────────────── Parser ─────────────────────────
+# Produces a small tuple-based AST:
+#   ('num', v) ('str', v) ('bool', v)
+#   ('list', [nodes]) ('map', [(keynode, valnode), ...])
+#   ('var', name)
+#   ('index', containernode, indexnode)
+#   ('call', name, [argnodes])
+#   ('unary', 'MINUS', node)
+#   ('binop', kind, left, right)
+
+CMP_OPS = ("EQEQ", "NEQ", "LE", "GE", "LT", "GT")
+ADD_OPS = ("PLUS", "MINUS")
+MUL_OPS = ("STAR", "SLASH")
+
+
+class Parser:
+    def __init__(self, tokens: List[Tuple[str, Any]]):
+        self.tokens = tokens
+        self.pos = 0
+
+    def peek(self) -> Tuple[Optional[str], Any]:
+        if self.pos < len(self.tokens):
+            return self.tokens[self.pos]
+        return (None, None)
+
+    def advance(self) -> Tuple[Optional[str], Any]:
+        tok = self.peek()
+        self.pos += 1
+        return tok
+
+    def at_end(self) -> bool:
+        return self.pos >= len(self.tokens)
+
+    def expect(self, kind: str) -> Tuple[str, Any]:
+        tok = self.peek()
+        if tok[0] != kind:
+            raise NovaError(f"Expected {kind} but got {tok[0]!r}")
+        return self.advance()
+
+    def parse_expression(self):
+        return self.parse_equality()
+
+    def parse_equality(self):
+        left = self.parse_additive()
+        while self.peek()[0] in CMP_OPS:
+            op, _ = self.advance()
+            right = self.parse_additive()
+            left = ("binop", op, left, right)
+        return left
+
+    def parse_additive(self):
+        left = self.parse_multiplicative()
+        while self.peek()[0] in ADD_OPS:
+            op, _ = self.advance()
+            right = self.parse_multiplicative()
+            left = ("binop", op, left, right)
+        return left
+
+    def parse_multiplicative(self):
+        left = self.parse_unary()
+        while self.peek()[0] in MUL_OPS:
+            op, _ = self.advance()
+            right = self.parse_unary()
+            left = ("binop", op, left, right)
+        return left
+
+    def parse_unary(self):
+        if self.peek()[0] == "MINUS":
+            self.advance()
+            node = self.parse_unary()
+            return ("unary", "MINUS", node)
+        return self.parse_postfix()
+
+    def parse_postfix(self):
+        node = self.parse_primary()
+        while self.peek()[0] == "LBRACK":
+            self.advance()
+            idx = self.parse_expression()
+            self.expect("RBRACK")
+            node = ("index", node, idx)
+        return node
+
+    def parse_primary(self):
+        kind, value = self.peek()
+
+        if kind in ("INT", "FLOAT"):
+            self.advance()
+            return ("num", value)
+
+        if kind == "STRING":
+            self.advance()
+            return ("str", value)
+
+        if kind == "IDENT":
+            self.advance()
+            if value == "true":
+                return ("bool", True)
+            if value == "false":
+                return ("bool", False)
+            if self.peek()[0] == "LPAREN":
+                self.advance()
+                args = []
+                if self.peek()[0] != "RPAREN":
+                    args.append(self.parse_expression())
+                    while self.peek()[0] == "COMMA":
+                        self.advance()
+                        args.append(self.parse_expression())
+                self.expect("RPAREN")
+                return ("call", value, args)
+            return ("var", value)
+
+        if kind == "LPAREN":
+            self.advance()
+            node = self.parse_expression()
+            self.expect("RPAREN")
+            return node
+
+        if kind == "LBRACK":
+            self.advance()
+            items = []
+            if self.peek()[0] != "RBRACK":
+                items.append(self.parse_expression())
+                while self.peek()[0] == "COMMA":
+                    self.advance()
+                    items.append(self.parse_expression())
+            self.expect("RBRACK")
+            return ("list", items)
+
+        if kind == "LBRACE":
+            self.advance()
+            pairs = []
+            if self.peek()[0] != "RBRACE":
+                pairs.append(self.parse_pair())
+                while self.peek()[0] == "COMMA":
+                    self.advance()
+                    pairs.append(self.parse_pair())
+            self.expect("RBRACE")
+            return ("map", pairs)
+
+        raise NovaError(f"Unexpected token: {kind} {value!r}")
+
+    def parse_pair(self):
+        kind, value = self.peek()
+        if kind == "IDENT":
+            self.advance()
+            key_node = ("str", value)
+        else:
+            key_node = self.parse_expression()
+        self.expect("COLON")
+        val_node = self.parse_expression()
+        return (key_node, val_node)
+
+
+# ───────────────────────── Interpreter ─────────────────────────
 
 class NovaInterpreter:
     def __init__(self):
@@ -49,7 +251,6 @@ class NovaInterpreter:
         self.functions: Dict[str, Tuple[List[str], List[str]]] = {}
         self.line_number = 0
 
-        # Built-in functions
         self.builtins = {
             "read_file": self.builtin_read_file,
             "len": self.builtin_len,
@@ -71,35 +272,16 @@ class NovaInterpreter:
         lines = source.splitlines()
         self.execute_block(lines, 0, len(lines))
 
-    # ── Comments ───────────────────────────────────────────────
-
-    def strip_comment(self, line: str) -> str:
-        """Remove a trailing '# ...' comment, ignoring '#' inside strings."""
-        in_string = False
-        string_char = None
-        for i, c in enumerate(line):
-            if in_string:
-                if c == "\\":
-                    continue
-                if c == string_char:
-                    in_string = False
-            elif c in '"\'':
-                in_string = True
-                string_char = c
-            elif c == "#":
-                return line[:i]
-        return line
-
-    # ── Block execution ────────────────────────────────────────
+    # ── Block execution / control flow ──────────────────────
 
     def execute_block(self, lines: List[str], start: int, end: int) -> int:
         i = start
         while i < end:
             raw = lines[i]
-            line = self.strip_comment(raw).strip()
+            line = raw.strip()
             self.line_number = i + 1
 
-            if not line:
+            if not line or line.startswith("#"):
                 i += 1
                 continue
 
@@ -137,102 +319,64 @@ class NovaInterpreter:
         return end
 
     def parse_function(self, lines, start, end):
-        header = self.strip_comment(lines[start]).strip()
+        header = lines[start].strip()
         match = re.match(r"fun\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*)\)", header)
         if not match:
-            raise Exception(f"Invalid function definition: {header}")
+            raise NovaError(f"Invalid function definition: {header}")
         name = match.group(1)
         params_str = match.group(2).strip()
         params = [p.strip() for p in params_str.split(",") if p.strip()] if params_str else []
 
-        body = []
-        i = start + 1
-        depth = 1
-        while i < end:
-            line = self.strip_comment(lines[i]).strip()
-            if line.startswith(BLOCK_STARTERS):
-                depth += 1
-            elif line == "end":
-                depth -= 1
-                if depth == 0:
-                    break
-            body.append(lines[i])
-            i += 1
-        if depth != 0:
-            raise Exception(f"Function '{name}' is missing 'end'")
+        body, i = self.collect_block(lines, start, end, name)
         self.functions[name] = (params, body)
         return i + 1
 
     def parse_if(self, lines, start, end):
-        """Supports if / elif (any number) / else / end."""
-        condition = self.strip_comment(lines[start]).strip()[3:].strip()
-        branches = []  # list of (condition_or_None, block_lines)
-        current_block: List[str] = []
-        branches.append((condition, current_block))
+        condition = lines[start].strip()[3:].strip()
+        cond_value = self.evaluate(condition)
 
+        then_block, else_block = [], []
         i = start + 1
         depth = 1
-        closed = False
+        in_else = False
         while i < end:
-            raw_line = lines[i]
-            line = self.strip_comment(raw_line).strip()
-
-            if depth == 1 and line.startswith("elif "):
-                current_block = []
-                branches.append((line[5:].strip(), current_block))
+            line = lines[i].strip()
+            if line.startswith(("fun ", "if ", "for ", "while ")):
+                depth += 1
+            elif line == "else" and depth == 1:
+                in_else = True
                 i += 1
                 continue
-            if depth == 1 and line == "else":
-                current_block = []
-                branches.append((None, current_block))
-                i += 1
-                continue
-
-            if line.startswith(BLOCK_STARTERS):
-                depth += 1
-            elif line == "end":
-                depth -= 1
-                if depth == 0:
-                    i += 1
-                    closed = True
-                    break
-
-            current_block.append(raw_line)
-            i += 1
-
-        if not closed:
-            raise Exception("if statement is missing 'end'")
-
-        for cond, block in branches:
-            if cond is None or self.evaluate(cond):
-                self.execute_block(block, 0, len(block))
-                break
-        return i
-
-    def parse_for(self, lines, start, end):
-        header = self.strip_comment(lines[start]).strip()
-        match = re.match(r"for\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+from\s+(.+)\s+to\s+(.+)", header)
-        if not match:
-            raise Exception(f"Invalid for loop: {header}")
-        var_name = match.group(1)
-        start_val = int(self.evaluate(match.group(2).strip()))
-        end_val = int(self.evaluate(match.group(3).strip()))
-
-        body = []
-        i = start + 1
-        depth = 1
-        while i < end:
-            line = self.strip_comment(lines[i]).strip()
-            if line.startswith(BLOCK_STARTERS):
-                depth += 1
             elif line == "end":
                 depth -= 1
                 if depth == 0:
                     break
-            body.append(lines[i])
+            if in_else:
+                else_block.append(lines[i])
+            else:
+                then_block.append(lines[i])
             i += 1
         if depth != 0:
-            raise Exception("for loop is missing 'end'")
+            raise NovaError("if statement is missing 'end'")
+
+        if cond_value:
+            self.execute_block(then_block, 0, len(then_block))
+        else:
+            self.execute_block(else_block, 0, len(else_block))
+        return i + 1
+
+    def parse_for(self, lines, start, end):
+        header = lines[start].strip()
+        match = re.match(r"for\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+from\s+(.+)\s+to\s+(.+)", header)
+        if not match:
+            raise NovaError(f"Invalid for loop: {header}")
+        var_name = match.group(1)
+        start_val = self.evaluate(match.group(2).strip())
+        end_val = self.evaluate(match.group(3).strip())
+        if not isinstance(start_val, int) or not isinstance(end_val, int):
+            raise NovaError("for..from..to bounds must be integers")
+
+        body, i = self.collect_block(lines, start, end, "for")
 
         for val in range(start_val, end_val + 1):
             self.variables[var_name] = val
@@ -243,22 +387,8 @@ class NovaInterpreter:
         return i + 1
 
     def parse_while(self, lines, start, end):
-        condition = self.strip_comment(lines[start]).strip()[6:].strip()
-        body = []
-        i = start + 1
-        depth = 1
-        while i < end:
-            line = self.strip_comment(lines[i]).strip()
-            if line.startswith(BLOCK_STARTERS):
-                depth += 1
-            elif line == "end":
-                depth -= 1
-                if depth == 0:
-                    break
-            body.append(lines[i])
-            i += 1
-        if depth != 0:
-            raise Exception("while loop is missing 'end'")
+        condition = lines[start].strip()[6:].strip()
+        body, i = self.collect_block(lines, start, end, "while")
 
         while self.evaluate(condition):
             try:
@@ -267,316 +397,179 @@ class NovaInterpreter:
                 break
         return i + 1
 
+    def collect_block(self, lines, start, end, label):
+        """Collect the raw lines of a block until the matching 'end'."""
+        body = []
+        i = start + 1
+        depth = 1
+        while i < end:
+            line = lines[i].strip()
+            if line.startswith(("fun ", "if ", "for ", "while ")):
+                depth += 1
+            elif line == "end":
+                depth -= 1
+                if depth == 0:
+                    return body, i
+            body.append(lines[i])
+            i += 1
+        raise NovaError(f"'{label}' block is missing 'end'")
+
+    # ── Statements ───────────────────────────────────────────
+
     def execute_statement(self, line: str):
         if line.startswith("print "):
             value = self.evaluate(line[6:].strip())
-            print(value)
+            print(self.stringify(value))
             return
 
-        # Function call as statement
-        if re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*\s*\(.*\)$", line):
-            self.evaluate(line)
+        eq_idx = self.find_assignment_index(line)
+        if eq_idx is not None:
+            target_str = line[:eq_idx].strip()
+            expr_str = line[eq_idx + 1:].strip()
+            if not target_str or not expr_str:
+                raise NovaError(f"Invalid assignment: {line}")
+            target_node = self.parse(target_str)
+            value = self.evaluate(expr_str)
+            self.assign_to(target_node, value)
             return
 
-        # Index / key assignment: container[index] = expr
-        idx_assign = re.match(r"^(.+)\[(.+)\]\s*(?<![!<>=])=(?!=)\s*(.+)$", line)
-        if idx_assign:
-            container = self.evaluate(idx_assign.group(1).strip())
-            index = self.evaluate(idx_assign.group(2).strip())
-            value = self.evaluate(idx_assign.group(3).strip())
+        # Bare expression statement (function call, etc.)
+        self.evaluate(line)
+
+    def find_assignment_index(self, line: str) -> Optional[int]:
+        """Find the position of a top-level '=' that is a plain assignment
+        (not part of ==, !=, <=, >=), skipping over strings/brackets."""
+        depth = 0
+        in_string = False
+        string_char = None
+        i = 0
+        n = len(line)
+        while i < n:
+            c = line[i]
+            if in_string:
+                if c == string_char:
+                    in_string = False
+            elif c in "\"'":
+                in_string = True
+                string_char = c
+            elif c in "([{":
+                depth += 1
+            elif c in ")]}":
+                depth -= 1
+            elif c == "=" and depth == 0:
+                prev_c = line[i - 1] if i > 0 else ""
+                next_c = line[i + 1] if i + 1 < n else ""
+                if prev_c not in "!<>=" and next_c != "=":
+                    return i
+            i += 1
+        return None
+
+    def assign_to(self, node, value):
+        if node[0] == "var":
+            self.variables[node[1]] = value
+            return
+        if node[0] == "index":
+            container = self.eval_node(node[1])
+            index = self.eval_node(node[2])
             try:
                 container[index] = value
-                return
-            except Exception as e:
-                raise Exception(f"Cannot assign to index: {e}")
+            except Exception:
+                raise NovaError(f"Cannot assign to index {index} of {self.stringify(container)}")
+            return
+        raise NovaError("Invalid assignment target")
 
-        # Plain assignment
-        if re.search(r"(?<![!<>=])=(?!=)", line):
-            parts = re.split(r"(?<![!<>=])=(?!=)", line, maxsplit=1)
-            if len(parts) == 2:
-                left = parts[0].strip()
-                expr = parts[1].strip()
+    # ── Expressions ──────────────────────────────────────────
 
-                if re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", left):
-                    self.variables[left] = self.evaluate(expr)
-                    return
-
-        raise Exception(f"Unknown statement: {line}")
-
-    # ── Expression evaluation ─────────────────────────────────
+    def parse(self, expr: str):
+        tokens = Tokenizer(expr).tokenize()
+        parser = Parser(tokens)
+        node = parser.parse_expression()
+        if not parser.at_end():
+            raise NovaError(f"Unexpected token near: {parser.peek()}")
+        return node
 
     def evaluate(self, expr: str) -> Any:
         expr = expr.strip()
         if not expr:
             return None
+        node = self.parse(expr)
+        return self.eval_node(node)
 
-        # Fully-parenthesized grouping: (expr)
-        stripped = self.strip_outer_parens(expr)
-        if stripped != expr:
-            return self.evaluate(stripped)
+    def eval_node(self, node) -> Any:
+        kind = node[0]
 
-        # String literal
-        if (expr.startswith('"') and expr.endswith('"') and len(expr) >= 2) or (
-            expr.startswith("'") and expr.endswith("'") and len(expr) >= 2
-        ):
-            return self.decode_string(expr[1:-1])
-
-        # Boolean
-        if expr == "true":
-            return True
-        if expr == "false":
-            return False
-
-        # Logical not
-        if expr == "not" or expr.startswith("not "):
-            return not self.evaluate(expr[3:].strip())
-
-        # List literal
-        if expr.startswith("[") and expr.endswith("]"):
-            inner = expr[1:-1].strip()
-            if not inner:
-                return []
-            return [self.evaluate(item) for item in self.split_args(inner)]
-
-        # Map literal
-        if expr.startswith("{") and expr.endswith("}"):
-            inner = expr[1:-1].strip()
-            if not inner:
-                return {}
-            result = {}
-            for pair in self.split_args(inner):
-                if ":" not in pair:
-                    raise Exception(f"Invalid map pair: {pair}")
-                k, v = pair.split(":", 1)
-                k = k.strip()
-                # Bareword keys (name: 1) are literal string keys, like in
-                # every other language with object-literal syntax - they
-                # must NOT be looked up as variables.
-                if re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", k):
-                    key = k
-                else:
-                    key = self.evaluate(k)
-                result[key] = self.evaluate(v.strip())
-            return result
-
-        # Indexing: something[index]
-        idx_match = re.match(r"^(.+)\[(.+)\]$", expr)
-        if idx_match:
-            container = self.evaluate(idx_match.group(1).strip())
-            index = self.evaluate(idx_match.group(2).strip())
+        if kind == "num":
+            return node[1]
+        if kind == "str":
+            return node[1]
+        if kind == "bool":
+            return node[1]
+        if kind == "list":
+            return [self.eval_node(n) for n in node[1]]
+        if kind == "map":
+            return {self.eval_node(k): self.eval_node(v) for k, v in node[1]}
+        if kind == "var":
+            name = node[1]
+            if name in self.variables:
+                return self.variables[name]
+            raise NovaError(f"Undefined variable: {name}")
+        if kind == "index":
+            container = self.eval_node(node[1])
+            index = self.eval_node(node[2])
             try:
                 return container[index]
             except Exception:
-                raise Exception(f"Cannot index {container} with {index}")
-
-        # Function / builtin call
-        call_match = re.match(r"^([a-zA-Z_][a-zA-Z0-9_]*)\s*\((.*)\)$", expr)
-        if call_match:
-            name = call_match.group(1)
-            args_str = call_match.group(2).strip()
-            args = [self.evaluate(a) for a in self.split_args(args_str)] if args_str else []
-
+                raise NovaError(f"Cannot index {self.stringify(container)} with {self.stringify(index)}")
+        if kind == "call":
+            name = node[1]
+            args = [self.eval_node(a) for a in node[2]]
             if name in self.builtins:
                 return self.builtins[name](*args)
             if name in self.functions:
                 return self.call_function(name, args)
-            raise Exception(f"Unknown function: {name}")
+            raise NovaError(f"Unknown function: {name}")
+        if kind == "unary":
+            val = self.eval_node(node[2])
+            if node[1] == "MINUS":
+                return -val
+            raise NovaError(f"Unknown unary operator: {node[1]}")
+        if kind == "binop":
+            op = node[1]
+            l = self.eval_node(node[2])
+            r = self.eval_node(node[3])
+            return self.apply_binop(op, l, r)
 
-        # Number
-        try:
-            if "." in expr:
-                return float(expr)
-            return int(expr)
-        except ValueError:
-            pass
+        raise NovaError(f"Unknown AST node: {node}")
 
-        # Variable
-        if re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", expr):
-            if expr in self.variables:
-                return self.variables[expr]
-            raise Exception(f"Undefined variable: {expr}")
-
-        return self.evaluate_expression(expr)
-
-    def evaluate_expression(self, expr: str) -> Any:
-        # Logical operators (lowest precedence)
-        parts = self.split_by_op(expr, "or")
-        if len(parts) > 1:
-            result = False
-            for p in parts:
-                if self.evaluate(p):
-                    result = True
-            return result
-
-        parts = self.split_by_op(expr, "and")
-        if len(parts) > 1:
-            for p in parts:
-                if not self.evaluate(p):
-                    return False
-            return True
-
-        for op in ["==", "!=", "<=", ">=", "<", ">"]:
-            parts = self.split_by_op(expr, op)
-            if len(parts) > 1:
-                l = self.evaluate(parts[0])
-                r = self.evaluate(parts[1])
-                if op == "==": return l == r
-                if op == "!=": return l != r
-                if op == "<=": return l <= r
-                if op == ">=": return l >= r
-                if op == "<":  return l < r
-                if op == ">":  return l > r
-
-        for op in ["+", "-"]:
-            parts = self.split_by_op(expr, op)
-            if len(parts) > 1:
-                result = self.evaluate(parts[0])
-                for p in parts[1:]:
-                    val = self.evaluate(p)
-                    result = result + val if op == "+" else result - val
-                return result
-
-        for op in ["*", "/"]:
-            parts = self.split_by_op(expr, op)
-            if len(parts) > 1:
-                result = self.evaluate(parts[0])
-                for p in parts[1:]:
-                    val = self.evaluate(p)
-                    result = result * val if op == "*" else result / val
-                return result
-
-        raise Exception(f"Cannot evaluate expression: {expr}")
-
-    # ── Helpers ────────────────────────────────────────────────
-
-    def strip_outer_parens(self, expr: str) -> str:
-        """If expr is fully wrapped in one matching pair of parens, unwrap it."""
-        if not (expr.startswith("(") and expr.endswith(")")):
-            return expr
-        depth = 0
-        in_string = False
-        string_char = None
-        for i, c in enumerate(expr):
-            if in_string:
-                if c == string_char:
-                    in_string = False
-                continue
-            if c in '"\'':
-                in_string = True
-                string_char = c
-                continue
-            if c == "(":
-                depth += 1
-            elif c == ")":
-                depth -= 1
-                if depth == 0 and i != len(expr) - 1:
-                    return expr  # closes early -> not a single wrapping group
-        return expr[1:-1].strip()
-
-    def decode_string(self, s: str) -> str:
-        out = []
-        i = 0
-        while i < len(s):
-            c = s[i]
-            if c == "\\" and i + 1 < len(s) and s[i + 1] in ESCAPE_MAP:
-                out.append(ESCAPE_MAP[s[i + 1]])
-                i += 2
-            else:
-                out.append(c)
-                i += 1
-        return "".join(out)
-
-    def split_by_op(self, expr: str, op: str) -> List[str]:
-        parts = []
-        current = ""
-        depth = 0
-        in_string = False
-        string_char = None
-        is_word_op = op.isalpha()
-        i = 0
-        while i < len(expr):
-            c = expr[i]
-            if in_string:
-                current += c
-                if c == "\\" and i + 1 < len(expr):
-                    current += expr[i + 1]
-                    i += 2
-                    continue
-                if c == string_char:
-                    in_string = False
-            elif c in '"\'':
-                in_string = True
-                string_char = c
-                current += c
-            elif c in "([{":
-                depth += 1
-                current += c
-            elif c in ")]}":
-                depth -= 1
-                current += c
-            elif (
-                depth == 0
-                and expr[i:i + len(op)] == op
-                and (
-                    not is_word_op
-                    or (
-                        (i == 0 or not (expr[i - 1].isalnum() or expr[i - 1] == "_"))
-                        and (
-                            i + len(op) >= len(expr)
-                            or not (expr[i + len(op)].isalnum() or expr[i + len(op)] == "_")
-                        )
-                    )
-                )
-            ):
-                if op in ("+", "-") and current.strip() == "":
-                    # unary +/- : keep it attached to the operand, don't split
-                    current += c
-                    i += 1
-                    continue
-                parts.append(current.strip())
-                current = ""
-                i += len(op) - 1
-            else:
-                current += c
-            i += 1
-        if current.strip():
-            parts.append(current.strip())
-        return parts if len(parts) > 1 else [expr]
-
-    def split_args(self, s: str) -> List[str]:
-        args = []
-        current = ""
-        depth = 0
-        in_string = False
-        string_char = None
-        for c in s:
-            if in_string:
-                current += c
-                if c == string_char:
-                    in_string = False
-            elif c in '"\'':
-                in_string = True
-                string_char = c
-                current += c
-            elif c in "([{":
-                depth += 1
-                current += c
-            elif c in ")]}":
-                depth -= 1
-                current += c
-            elif c == "," and depth == 0:
-                args.append(current.strip())
-                current = ""
-            else:
-                current += c
-        if current.strip():
-            args.append(current.strip())
-        return args
+    def apply_binop(self, op: str, l: Any, r: Any) -> Any:
+        if op == "PLUS":
+            if isinstance(l, str) or isinstance(r, str):
+                return self.stringify(l) + self.stringify(r)
+            return l + r
+        if op == "MINUS":
+            return l - r
+        if op == "STAR":
+            return l * r
+        if op == "SLASH":
+            return l / r
+        if op == "EQEQ":
+            return l == r
+        if op == "NEQ":
+            return l != r
+        if op == "LE":
+            return l <= r
+        if op == "GE":
+            return l >= r
+        if op == "LT":
+            return l < r
+        if op == "GT":
+            return l > r
+        raise NovaError(f"Unknown operator: {op}")
 
     def call_function(self, name: str, args: List[Any]) -> Any:
         params, body = self.functions[name]
         if len(args) != len(params):
-            raise Exception(f"Function '{name}' expects {len(params)} arguments, got {len(args)}")
+            raise NovaError(f"Function '{name}' expects {len(params)} arguments, got {len(args)}")
         old_vars = self.variables.copy()
         for param, arg in zip(params, args):
             self.variables[param] = arg
@@ -588,7 +581,20 @@ class NovaInterpreter:
         finally:
             self.variables = old_vars
 
-    # ── Built-ins ──────────────────────────────────────────────
+    # ── Value rendering ──────────────────────────────────────
+
+    def stringify(self, value: Any) -> str:
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if value is None:
+            return "null"
+        if isinstance(value, list):
+            return "[" + ", ".join(self.stringify(v) for v in value) + "]"
+        if isinstance(value, dict):
+            return "{" + ", ".join(f"{k}: {self.stringify(v)}" for k, v in value.items()) + "}"
+        return str(value)
+
+    # ── Built-ins ──────────────────────────────────────────
 
     def builtin_read_file(self, path: str) -> str:
         with open(path, "r", encoding="utf-8") as f:
@@ -598,7 +604,7 @@ class NovaInterpreter:
         return len(x)
 
     def builtin_str(self, x) -> str:
-        return str(x)
+        return self.stringify(x)
 
     def builtin_int(self, x) -> int:
         return int(x)
@@ -608,7 +614,7 @@ class NovaInterpreter:
 
     def builtin_append(self, lst, item):
         if not isinstance(lst, list):
-            raise Exception("append expects a list")
+            raise NovaError("append expects a list")
         lst.append(item)
         return lst
 
@@ -616,15 +622,21 @@ class NovaInterpreter:
         return s.split(sep)
 
     def builtin_join(self, lst, sep: str = "") -> str:
-        return sep.join(str(x) for x in lst)
+        return sep.join(self.stringify(x) for x in lst)
 
     def builtin_type(self, x) -> str:
-        if isinstance(x, bool): return "bool"
-        if isinstance(x, int): return "int"
-        if isinstance(x, float): return "float"
-        if isinstance(x, str): return "string"
-        if isinstance(x, list): return "list"
-        if isinstance(x, dict): return "map"
+        if isinstance(x, bool):
+            return "bool"
+        if isinstance(x, int):
+            return "int"
+        if isinstance(x, float):
+            return "float"
+        if isinstance(x, str):
+            return "string"
+        if isinstance(x, list):
+            return "list"
+        if isinstance(x, dict):
+            return "map"
         return "unknown"
 
 
