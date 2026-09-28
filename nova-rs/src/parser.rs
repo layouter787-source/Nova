@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use crate::ast::{BinOp, Expr, FunDef, Stmt, StmtKind};
+use crate::ast::{BinOp, Expr, FunDef, Stmt, StmtKind, StructDef};
 use crate::error::NovaError;
 use crate::lexer::{Tok, Token};
 
@@ -130,6 +130,8 @@ impl Parser {
         let line = self.line();
         let kind = match self.peek().clone() {
             Tok::Fun => self.parse_fun()?,
+            Tok::Struct => self.parse_struct()?,
+            Tok::Import => self.parse_import()?,
             Tok::If => self.parse_if()?,
             Tok::For => self.parse_for()?,
             Tok::While => self.parse_while()?,
@@ -153,7 +155,7 @@ impl Parser {
                 let e = self.parse_expr()?;
                 if self.eat(&Tok::Assign) {
                     match e {
-                        Expr::Var(_) | Expr::Index(..) => {}
+                        Expr::Var(_) | Expr::Index(..) | Expr::Field(..) => {}
                         _ => return Err(NovaError::new(line, "invalid assignment target")),
                     }
                     let v = self.parse_expr()?;
@@ -192,6 +194,43 @@ impl Parser {
         let body = self.parse_block(&[Tok::End], open_line, &format!("function '{}'", name))?;
         self.expect(Tok::End, "'end'")?;
         Ok(StmtKind::Fun(Rc::new(FunDef { name, params, body })))
+    }
+
+    fn parse_struct(&mut self) -> Result<StmtKind, NovaError> {
+        let open_line = self.line();
+        self.advance(); // struct
+        let name = match self.advance() {
+            Token { tok: Tok::Ident(n), .. } => n,
+            t => return Err(NovaError::new(t.line, "expected struct name after 'struct'")),
+        };
+        self.end_of_stmt()?;
+        self.skip_newlines();
+        let mut fields = Vec::new();
+        loop {
+            if self.check(&Tok::End) {
+                break;
+            }
+            if self.check(&Tok::Eof) {
+                return Err(NovaError::new(open_line, format!("struct '{}' is missing 'end'", name)));
+            }
+            match self.advance() {
+                Token { tok: Tok::Ident(f), .. } => fields.push(f),
+                t => return Err(NovaError::new(t.line, "expected a field name in struct body")),
+            }
+            self.end_of_stmt()?;
+            self.skip_newlines();
+        }
+        self.expect(Tok::End, "'end'")?;
+        Ok(StmtKind::Struct(Rc::new(StructDef { name, fields })))
+    }
+
+    fn parse_import(&mut self) -> Result<StmtKind, NovaError> {
+        self.advance(); // import
+        let path = match self.advance() {
+            Token { tok: Tok::Str(s), .. } => s,
+            t => return Err(NovaError::new(t.line, "expected a string path after 'import'")),
+        };
+        Ok(StmtKind::Import(path))
     }
 
     /// Parses `if ... [else if ...] [else ...] end`. Consumes the final 'end'.
@@ -244,7 +283,7 @@ impl Parser {
     }
 
     // ── expressions (lowest to highest precedence) ─────────────
-    // or < and < not < comparison < + - < * / < unary minus < index/call
+    // or < and < not < comparison < + - < * / < unary minus < index/call/field
 
     pub fn parse_expr(&mut self) -> Result<Expr, NovaError> {
         self.parse_or()
@@ -336,14 +375,25 @@ impl Parser {
     }
 
     fn parse_postfix(&mut self) -> Result<Expr, NovaError> {
-        let mut e = self.parse_primary()?;
-        while self.check(&Tok::LBracket) {
-            self.advance();
-            let idx = self.parse_expr()?;
-            self.expect(Tok::RBracket, "']'")?;
-            e = Expr::Index(Box::new(e), Box::new(idx));
+        let mut node = self.parse_primary()?;
+        loop {
+            if self.check(&Tok::LBracket) {
+                self.advance();
+                let idx = self.parse_expression()?;
+                self.expect(Tok::RBracket, "']'")?;
+                node = Expr::Index(Box::new(node), Box::new(idx));
+            } else if self.check(&Tok::Dot) {
+                self.advance();
+                let name = match self.advance() {
+                    Token { tok: Tok::Ident(n), .. } => n,
+                    t => return Err(NovaError::new(t.line, "expected a field name after '.'")),
+                };
+                node = Expr::Field(Box::new(node), name);
+            } else {
+                break;
+            }
         }
-        Ok(e)
+        Ok(node)
     }
 
     fn parse_primary(&mut self) -> Result<Expr, NovaError> {
@@ -358,11 +408,9 @@ impl Parser {
                 if self.eat(&Tok::LParen) {
                     let mut args = Vec::new();
                     if !self.check(&Tok::RParen) {
-                        loop {
+                        args.push(self.parse_expr()?);
+                        while self.eat(&Tok::Comma) {
                             args.push(self.parse_expr()?);
-                            if !self.eat(&Tok::Comma) {
-                                break;
-                            }
                         }
                     }
                     self.expect(Tok::RParen, "')'")?;
@@ -379,14 +427,12 @@ impl Parser {
             Tok::LBracket => {
                 let mut items = Vec::new();
                 if !self.check(&Tok::RBracket) {
-                    loop {
-                        items.push(self.parse_expr()?);
-                        if !self.eat(&Tok::Comma) {
-                            break;
-                        }
+                    items.push(self.parse_expr()?);
+                    while self.eat(&Tok::Comma) {
                         if self.check(&Tok::RBracket) {
                             break;
                         }
+                        items.push(self.parse_expr()?);
                     }
                 }
                 self.expect(Tok::RBracket, "']'")?;
@@ -395,23 +441,12 @@ impl Parser {
             Tok::LBrace => {
                 let mut pairs = Vec::new();
                 if !self.check(&Tok::RBrace) {
-                    loop {
-                        let key = match self.peek().clone() {
-                            Tok::Ident(n) if self.peek_at(1) == &Tok::Colon => {
-                                self.advance();
-                                Expr::Str(n)
-                            }
-                            _ => self.parse_expr()?,
-                        };
-                        self.expect(Tok::Colon, "':'")?;
-                        let val = self.parse_expr()?;
-                        pairs.push((key, val));
-                        if !self.eat(&Tok::Comma) {
-                            break;
-                        }
+                    pairs.push(self.parse_pair()?);
+                    while self.eat(&Tok::Comma) {
                         if self.check(&Tok::RBrace) {
                             break;
                         }
+                        pairs.push(self.parse_pair()?);
                     }
                 }
                 self.expect(Tok::RBrace, "'}'")?;
@@ -419,5 +454,22 @@ impl Parser {
             }
             other => Err(NovaError::new(line, format!("unexpected {}", describe_tok(&other)))),
         }
+    }
+
+    fn parse_pair(&mut self) -> Result<(Expr, Expr), NovaError> {
+        let kind = self.peek().clone();
+        let key_node = if let Tok::Ident(v) = kind {
+            if self.peek_at(1) == &Tok::Colon {
+                self.advance();
+                Expr::Str(v)
+            } else {
+                self.parse_expr()?
+            }
+        } else {
+            self.parse_expr()?
+        };
+        self.expect(Tok::Colon, "':'")?;
+        let val_node = self.parse_expr()?;
+        Ok((key_node, val_node))
     }
 }
