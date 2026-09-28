@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::thread;
 
@@ -18,13 +19,14 @@ impl Write for Buf {
 
 // Runs on a big-stack thread (like the real `nova` binary does) so the
 // call-depth limit is reached before the Rust stack is exhausted.
-fn run(src: &str) -> Result<String, String> {
+fn run_with_base(src: &str, base_dir: &str) -> Result<String, String> {
     let src = src.to_string();
+    let base = PathBuf::from(base_dir);
     thread::Builder::new()
         .stack_size(256 * 1024 * 1024)
         .spawn(move || {
             let buf = Buf(Rc::new(RefCell::new(Vec::new())));
-            let result = nova::run_source(&src, Box::new(buf.clone()));
+            let result = nova::run_source(&src, Box::new(buf.clone()), base);
             match result {
                 Ok(()) => Ok(String::from_utf8(buf.0.borrow().clone()).unwrap()),
                 Err(e) => Err(e.to_string()),
@@ -33,6 +35,10 @@ fn run(src: &str) -> Result<String, String> {
         .unwrap()
         .join()
         .unwrap()
+}
+
+fn run(src: &str) -> Result<String, String> {
+    run_with_base(src, ".")
 }
 
 fn ok(src: &str) -> String {
@@ -139,6 +145,62 @@ fn builtins() {
 #[test]
 fn multiline_list_literal() {
     assert_eq!(ok("x = [\n  1,\n  2\n]\nprint len(x)"), "2\n");
+}
+
+#[test]
+fn structs_basic() {
+    let src = "struct Point\n  x\n  y\nend\np = Point(1, 2)\nprint p.x\nprint p\np.x = 9\nprint p.x\nprint type(p)";
+    assert_eq!(ok(src), "1\nPoint { x: 1, y: 2 }\n9\nPoint\n");
+}
+
+#[test]
+fn struct_equality_is_structural() {
+    let src = "struct P\n  x\nend\na = P(1)\nb = P(1)\nc = P(2)\nprint a == b\nprint a == c";
+    assert_eq!(ok(src), "true\nfalse\n");
+}
+
+#[test]
+fn struct_field_count_mismatch_is_an_error() {
+    let e = run("struct P\n  x\n  y\nend\nP(1)").unwrap_err();
+    assert!(e.contains("expects 2 field"), "got: {}", e);
+}
+
+#[test]
+fn struct_unknown_field_is_an_error() {
+    let e = run("struct P\n  x\nend\np = P(1)\nprint p.y").unwrap_err();
+    assert!(e.contains("no field 'y'"), "got: {}", e);
+}
+
+#[test]
+fn import_defines_functions_and_structs() {
+    let out = run_with_base(
+        "import \"geometry.nv\"\np1 = Point(0, 0)\np2 = Point(3, 4)\nprint distance_sq(p1, p2)",
+        "tests/fixtures",
+    )
+    .unwrap();
+    assert_eq!(out, "25\n");
+}
+
+#[test]
+fn import_is_idempotent() {
+    let out = run_with_base(
+        "import \"geometry.nv\"\nimport \"geometry.nv\"\nprint distance_sq(Point(0, 0), Point(3, 4))",
+        "tests/fixtures",
+    )
+    .unwrap();
+    assert_eq!(out, "25\n");
+}
+
+#[test]
+fn circular_import_is_an_error() {
+    let e = run_with_base("import \"cycle_a.nv\"\nprint \"unreachable\"", "tests/fixtures").unwrap_err();
+    assert!(e.contains("circular import"), "got: {}", e);
+}
+
+#[test]
+fn missing_import_is_an_error() {
+    let e = run_with_base("import \"does_not_exist.nv\"", "tests/fixtures").unwrap_err();
+    assert!(e.contains("cannot import"), "got: {}", e);
 }
 
 #[test]
