@@ -379,7 +379,7 @@ impl Parser {
         loop {
             if self.check(&Tok::LBracket) {
                 self.advance();
-                let idx = self.parse_expression()?;
+                let idx = self.parse_expr()?;
                 self.expect(Tok::RBracket, "']'")?;
                 node = Expr::Index(Box::new(node), Box::new(idx));
             } else if self.check(&Tok::Dot) {
