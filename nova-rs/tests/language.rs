@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::io::{self, Write};
 use std::rc::Rc;
+use std::thread;
 
 #[derive(Clone)]
 struct Buf(Rc<RefCell<Vec<u8>>>);
@@ -15,13 +16,23 @@ impl Write for Buf {
     }
 }
 
+// Runs on a big-stack thread (like the real `nova` binary does) so the
+// call-depth limit is reached before the Rust stack is exhausted.
 fn run(src: &str) -> Result<String, String> {
-    let buf = Buf(Rc::new(RefCell::new(Vec::new())));
-    let result = nova::run_source(src, Box::new(buf.clone()));
-    match result {
-        Ok(()) => Ok(String::from_utf8(buf.0.borrow().clone()).unwrap()),
-        Err(e) => Err(e.to_string()),
-    }
+    let src = src.to_string();
+    thread::Builder::new()
+        .stack_size(256 * 1024 * 1024)
+        .spawn(move || {
+            let buf = Buf(Rc::new(RefCell::new(Vec::new())));
+            let result = nova::run_source(&src, Box::new(buf.clone()));
+            match result {
+                Ok(()) => Ok(String::from_utf8(buf.0.borrow().clone()).unwrap()),
+                Err(e) => Err(e.to_string()),
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap()
 }
 
 fn ok(src: &str) -> String {
