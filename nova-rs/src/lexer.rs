@@ -23,6 +23,8 @@ pub enum Tok {
     And,
     Or,
     Not,
+    Struct,
+    Import,
     // symbols
     Plus,
     Minus,
@@ -36,6 +38,7 @@ pub enum Tok {
     RBrace,
     Comma,
     Colon,
+    Dot,
     Assign,
     EqEq,
     NotEq,
@@ -71,6 +74,8 @@ fn keyword(s: &str) -> Option<Tok> {
         "and" => Tok::And,
         "or" => Tok::Or,
         "not" => Tok::Not,
+        "struct" => Tok::Struct,
+        "import" => Tok::Import,
         _ => return None,
     })
 }
@@ -212,6 +217,7 @@ pub fn tokenize(src: &str) -> Result<Vec<Token>, NovaError> {
                 }
                 ',' => (Tok::Comma, 1),
                 ':' => (Tok::Colon, 1),
+                '.' => (Tok::Dot, 1),
                 '=' => {
                     if next == Some('=') {
                         (Tok::EqEq, 2)
