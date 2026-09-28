@@ -1,5 +1,6 @@
 use std::fs;
 use std::io::{self, BufWriter};
+use std::path::{Path, PathBuf};
 use std::process;
 use std::thread;
 
@@ -14,9 +15,9 @@ fn report(src: &str, e: &NovaError) {
     }
 }
 
-fn run(src: &str) -> i32 {
+fn run(src: &str, base_dir: PathBuf) -> i32 {
     let out = Box::new(BufWriter::new(io::stdout()));
-    match nova::run_source(src, out) {
+    match nova::run_source(src, out, base_dir) {
         Ok(()) => 0,
         Err(e) => {
             report(src, &e);
@@ -40,11 +41,17 @@ fn main() {
         }
     };
 
+    let base_dir = Path::new(&path)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+
     // Run on a thread with a big stack so deep recursion in Nova programs
     // hits our call-depth limit instead of crashing the process.
     let handle = thread::Builder::new()
         .stack_size(256 * 1024 * 1024)
-        .spawn(move || run(&src))
+        .spawn(move || run(&src, base_dir))
         .expect("failed to start interpreter thread");
     let code = handle.join().unwrap_or(1);
     process::exit(code);
