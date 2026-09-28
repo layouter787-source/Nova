@@ -1,0 +1,14 @@
+# Library used by structs_and_modules.nv via import.
+# NOTE: uses 'struct' and 'import', which only nova-rs supports
+# (the Python bootstrap interpreter does not implement them).
+
+struct Point
+  x
+  y
+end
+
+fun distance_sq(a, b)
+  dx = a.x - b.x
+  dy = a.y - b.y
+  return dx * dx + dy * dy
+end
