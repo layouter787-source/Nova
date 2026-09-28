@@ -1,16 +1,18 @@
 use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
+use std::path::PathBuf;
 use std::rc::Rc;
 
-use crate::ast::{BinOp, Expr, FunDef, Stmt, StmtKind};
+use crate::ast::{BinOp, Expr, FunDef, Stmt, StmtKind, StructDef};
 use crate::error::NovaError;
 
 const MAX_DEPTH: usize = 2000;
 
 type ListRef = Rc<RefCell<Vec<Value>>>;
 type MapRef = Rc<RefCell<Vec<(Value, Value)>>>;
+type StructRef = Rc<RefCell<Vec<(String, Value)>>>;
 
 #[derive(Clone, Debug)]
 pub enum Value {
@@ -21,6 +23,7 @@ pub enum Value {
     Str(String),
     List(ListRef),
     Map(MapRef),
+    Struct(String, StructRef),
 }
 
 pub fn new_list(v: Vec<Value>) -> Value {
@@ -45,6 +48,7 @@ impl Value {
             Value::Str(_) => "string",
             Value::List(_) => "list",
             Value::Map(_) => "map",
+            Value::Struct(_, _) => "struct",
         }
     }
 
@@ -57,6 +61,7 @@ impl Value {
             Value::Str(s) => !s.is_empty(),
             Value::List(l) => !l.borrow().is_empty(),
             Value::Map(m) => !m.borrow().is_empty(),
+            Value::Struct(_, _) => true,
         }
     }
 
@@ -78,6 +83,14 @@ impl Value {
                     .map(|(k, v)| format!("{}: {}", k.display(), v.display()))
                     .collect();
                 format!("{{{}}}", parts.join(", "))
+            }
+            Value::Struct(name, fields) => {
+                let parts: Vec<String> = fields
+                    .borrow()
+                    .iter()
+                    .map(|(k, v)| format!("{}: {}", k, v.display()))
+                    .collect();
+                format!("{} {{ {} }}", name, parts.join(", "))
             }
         }
     }
@@ -110,6 +123,23 @@ fn values_equal(a: &Value, b: &Value) -> bool {
                 && x.iter().all(|(k, v)| match map_get(&y, k) {
                     Some(other) => values_equal(v, &other),
                     None => false,
+                })
+        }
+        (Value::Struct(n1, f1), Value::Struct(n2, f2)) => {
+            if n1 != n2 {
+                return false;
+            }
+            if Rc::ptr_eq(f1, f2) {
+                return true;
+            }
+            let a = f1.borrow();
+            let b = f2.borrow();
+            a.len() == b.len()
+                && a.iter().all(|(k, v)| {
+                    b.iter()
+                        .find(|(k2, _)| k2 == k)
+                        .map(|(_, v2)| values_equal(v, v2))
+                        .unwrap_or(false)
                 })
         }
         _ => false,
@@ -439,6 +469,9 @@ fn b_join(args: &[Value]) -> Result<Value, NovaError> {
 
 fn b_type(args: &[Value]) -> Result<Value, NovaError> {
     expect_args("type", args, 1, 1)?;
+    if let Value::Struct(name, _) = &args[0] {
+        return Ok(Value::Str(name.clone()));
+    }
     Ok(Value::Str(args[0].type_name().to_string()))
 }
 
@@ -486,15 +519,23 @@ enum Flow {
 pub struct Interpreter {
     frames: Vec<HashMap<String, Value>>,
     functions: HashMap<String, Rc<FunDef>>,
+    structs: HashMap<String, Rc<StructDef>>,
+    base_dir: PathBuf,
+    imported: HashSet<PathBuf>,
+    importing: HashSet<PathBuf>,
     out: Box<dyn Write>,
     depth: usize,
 }
 
 impl Interpreter {
-    pub fn new(out: Box<dyn Write>) -> Self {
+    pub fn new(out: Box<dyn Write>, base_dir: PathBuf) -> Self {
         Interpreter {
             frames: vec![HashMap::new()],
             functions: HashMap::new(),
+            structs: HashMap::new(),
+            base_dir,
+            imported: HashSet::new(),
+            importing: HashSet::new(),
             out,
             depth: 0,
         }
@@ -557,6 +598,30 @@ impl Interpreter {
                         let iv = self.eval(i)?;
                         set_index(&cv, &iv, v)?;
                     }
+                    Expr::Field(base, fname) => {
+                        let bv = self.eval(base)?;
+                        match bv {
+                            Value::Struct(sname, fields) => {
+                                let mut fs = fields.borrow_mut();
+                                match fs.iter_mut().find(|(k, _)| k == fname) {
+                                    Some(entry) => entry.1 = v,
+                                    None => {
+                                        return Err(NovaError::runtime(format!(
+                                            "struct '{}' has no field '{}'",
+                                            sname, fname
+                                        )))
+                                    }
+                                }
+                            }
+                            other => {
+                                return Err(NovaError::runtime(format!(
+                                    "cannot assign field '{}' of {}",
+                                    fname,
+                                    other.type_name()
+                                )))
+                            }
+                        }
+                    }
                     _ => return Err(NovaError::runtime("invalid assignment target")),
                 }
                 Ok(Flow::Normal)
@@ -608,6 +673,14 @@ impl Interpreter {
                 self.functions.insert(def.name.clone(), def.clone());
                 Ok(Flow::Normal)
             }
+            StmtKind::Struct(def) => {
+                self.structs.insert(def.name.clone(), def.clone());
+                Ok(Flow::Normal)
+            }
+            StmtKind::Import(path) => {
+                self.do_import(path)?;
+                Ok(Flow::Normal)
+            }
             StmtKind::Return(opt) => {
                 let v = match opt {
                     Some(e) => self.eval(e)?,
@@ -617,6 +690,43 @@ impl Interpreter {
             }
             StmtKind::Break => Ok(Flow::Break),
         }
+    }
+
+    fn do_import(&mut self, rel_path: &str) -> Result<(), NovaError> {
+        let full = self.base_dir.join(rel_path);
+        let canon = full.canonicalize().unwrap_or_else(|_| full.clone());
+
+        if self.imported.contains(&canon) {
+            return Ok(());
+        }
+        if self.importing.contains(&canon) {
+            return Err(NovaError::runtime(format!("circular import: {}", rel_path)));
+        }
+
+        let src = std::fs::read_to_string(&full)
+            .map_err(|e| NovaError::runtime(format!("cannot import '{}': {}", rel_path, e)))?;
+
+        self.importing.insert(canon.clone());
+        let tokens = crate::lexer::tokenize(&src)?;
+        let program = crate::parser::Parser::new(tokens).parse_program()?;
+        let result = self.exec_block(&program);
+        self.importing.remove(&canon);
+
+        match result? {
+            Flow::Normal => {}
+            Flow::Break => {
+                return Err(NovaError::runtime(format!("'break' outside of a loop (in '{}')", rel_path)))
+            }
+            Flow::Return(_) => {
+                return Err(NovaError::runtime(format!(
+                    "'return' outside of a function (in '{}')",
+                    rel_path
+                )))
+            }
+        }
+
+        self.imported.insert(canon);
+        Ok(())
     }
 
     fn call_function(&mut self, def: &Rc<FunDef>, args: Vec<Value>) -> Result<Value, NovaError> {
@@ -678,10 +788,43 @@ impl Interpreter {
                 let iv = self.eval(i)?;
                 get_index(&cv, &iv)
             }
+            Expr::Field(base, name) => {
+                let bv = self.eval(base)?;
+                match bv {
+                    Value::Struct(sname, fields) => {
+                        let fs = fields.borrow();
+                        match fs.iter().find(|(k, _)| k == name) {
+                            Some((_, v)) => Ok(v.clone()),
+                            None => Err(NovaError::runtime(format!(
+                                "struct '{}' has no field '{}'",
+                                sname, name
+                            ))),
+                        }
+                    }
+                    other => Err(NovaError::runtime(format!(
+                        "cannot access field '{}' of {}",
+                        name,
+                        other.type_name()
+                    ))),
+                }
+            }
             Expr::Call(name, args) => {
                 let mut argv = Vec::with_capacity(args.len());
                 for a in args {
                     argv.push(self.eval(a)?);
+                }
+                if let Some(sdef) = self.structs.get(name.as_str()).cloned() {
+                    if argv.len() != sdef.fields.len() {
+                        return Err(NovaError::runtime(format!(
+                            "struct '{}' expects {} field(s), got {}",
+                            sdef.name,
+                            sdef.fields.len(),
+                            argv.len()
+                        )));
+                    }
+                    let pairs: Vec<(String, Value)> =
+                        sdef.fields.iter().cloned().zip(argv.into_iter()).collect();
+                    return Ok(Value::Struct(sdef.name.clone(), Rc::new(RefCell::new(pairs))));
                 }
                 if let Some(r) = builtin(name, &argv) {
                     return r;
