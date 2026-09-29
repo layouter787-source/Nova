@@ -1,0 +1,23 @@
+# Structs with methods, running on the Rust interpreter (nova-rs).
+# NOTE: needs a struct/method-aware interpreter; the Python bootstrap
+# interpreter (interpreter/nova.py) does not implement these.
+
+struct Counter
+  value
+end
+
+fun Counter.increment(self)
+  self.value = self.value + 1
+  return self
+end
+
+fun Counter.get(self)
+  return self.value
+end
+
+c = Counter(0)
+c.increment()
+c.increment()
+c.increment()
+print c.get()
+print c
