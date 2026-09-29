@@ -520,6 +520,7 @@ pub struct Interpreter {
     frames: Vec<HashMap<String, Value>>,
     functions: HashMap<String, Rc<FunDef>>,
     structs: HashMap<String, Rc<StructDef>>,
+    methods: HashMap<(String, String), Rc<FunDef>>,
     base_dir: PathBuf,
     imported: HashSet<PathBuf>,
     importing: HashSet<PathBuf>,
@@ -533,6 +534,7 @@ impl Interpreter {
             frames: vec![HashMap::new()],
             functions: HashMap::new(),
             structs: HashMap::new(),
+            methods: HashMap::new(),
             base_dir,
             imported: HashSet::new(),
             importing: HashSet::new(),
@@ -670,7 +672,14 @@ impl Interpreter {
                 Ok(Flow::Normal)
             }
             StmtKind::Fun(def) => {
-                self.functions.insert(def.name.clone(), def.clone());
+                match &def.owner {
+                    Some(owner) => {
+                        self.methods.insert((owner.clone(), def.name.clone()), def.clone());
+                    }
+                    None => {
+                        self.functions.insert(def.name.clone(), def.clone());
+                    }
+                }
                 Ok(Flow::Normal)
             }
             StmtKind::Struct(def) => {
@@ -731,9 +740,13 @@ impl Interpreter {
 
     fn call_function(&mut self, def: &Rc<FunDef>, args: Vec<Value>) -> Result<Value, NovaError> {
         if args.len() != def.params.len() {
+            let label = match &def.owner {
+                Some(o) => format!("{}.{}", o, def.name),
+                None => def.name.clone(),
+            };
             return Err(NovaError::runtime(format!(
-                "Function '{}' expects {} arguments, got {}",
-                def.name,
+                "'{}' expects {} argument(s), got {}",
+                label,
                 def.params.len(),
                 args.len()
             )));
@@ -833,6 +846,33 @@ impl Interpreter {
                 match def {
                     Some(d) => self.call_function(&d, argv),
                     None => Err(NovaError::runtime(format!("Unknown function: {}", name))),
+                }
+            }
+            Expr::MethodCall(recv, method, args) => {
+                let rv = self.eval(recv)?;
+                match &rv {
+                    Value::Struct(sname, _) => {
+                        let def = self.methods.get(&(sname.clone(), method.clone())).cloned();
+                        match def {
+                            Some(d) => {
+                                let mut argv = Vec::with_capacity(args.len() + 1);
+                                argv.push(rv.clone());
+                                for a in args {
+                                    argv.push(self.eval(a)?);
+                                }
+                                self.call_function(&d, argv)
+                            }
+                            None => Err(NovaError::runtime(format!(
+                                "struct '{}' has no method '{}'",
+                                sname, method
+                            ))),
+                        }
+                    }
+                    other => Err(NovaError::runtime(format!(
+                        "cannot call method '{}' on {}",
+                        method,
+                        other.type_name()
+                    ))),
                 }
             }
             Expr::Neg(x) => match self.eval(x)? {
