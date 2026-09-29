@@ -169,20 +169,32 @@ impl Parser {
         Ok(Stmt { kind, line })
     }
 
+    /// `fun name(params) ... end` for a plain function, or
+    /// `fun Struct.name(params) ... end` for a method.
     fn parse_fun(&mut self) -> Result<StmtKind, NovaError> {
         let open_line = self.line();
         self.advance(); // fun
-        let name = match self.advance() {
+        let first = match self.advance() {
             Token { tok: Tok::Ident(n), .. } => n,
-            t => return Err(NovaError::new(t.line, "expected function name after 'fun'")),
+            t => return Err(NovaError::new(t.line, "expected a function name after 'fun'")),
         };
+        let (owner, name) = if self.eat(&Tok::Dot) {
+            let method_name = match self.advance() {
+                Token { tok: Tok::Ident(n), .. } => n,
+                t => return Err(NovaError::new(t.line, "expected a method name after '.'")),
+            };
+            (Some(first), method_name)
+        } else {
+            (None, first)
+        };
+
         self.expect(Tok::LParen, "'('")?;
         let mut params = Vec::new();
         if !self.check(&Tok::RParen) {
             loop {
                 match self.advance() {
                     Token { tok: Tok::Ident(p), .. } => params.push(p),
-                    t => return Err(NovaError::new(t.line, "expected parameter name")),
+                    t => return Err(NovaError::new(t.line, "expected a parameter name")),
                 }
                 if !self.eat(&Tok::Comma) {
                     break;
@@ -191,9 +203,14 @@ impl Parser {
         }
         self.expect(Tok::RParen, "')'")?;
         self.end_of_stmt()?;
-        let body = self.parse_block(&[Tok::End], open_line, &format!("function '{}'", name))?;
+
+        let label = match &owner {
+            Some(o) => format!("method '{}.{}'", o, name),
+            None => format!("function '{}'", name),
+        };
+        let body = self.parse_block(&[Tok::End], open_line, &label)?;
         self.expect(Tok::End, "'end'")?;
-        Ok(StmtKind::Fun(Rc::new(FunDef { name, params, body })))
+        Ok(StmtKind::Fun(Rc::new(FunDef { name, owner, params, body })))
     }
 
     fn parse_struct(&mut self) -> Result<StmtKind, NovaError> {
@@ -201,7 +218,7 @@ impl Parser {
         self.advance(); // struct
         let name = match self.advance() {
             Token { tok: Tok::Ident(n), .. } => n,
-            t => return Err(NovaError::new(t.line, "expected struct name after 'struct'")),
+            t => return Err(NovaError::new(t.line, "expected a struct name after 'struct'")),
         };
         self.end_of_stmt()?;
         self.skip_newlines();
@@ -260,7 +277,7 @@ impl Parser {
         self.advance(); // for
         let var = match self.advance() {
             Token { tok: Tok::Ident(n), .. } => n,
-            t => return Err(NovaError::new(t.line, "expected loop variable after 'for'")),
+            t => return Err(NovaError::new(t.line, "expected a loop variable after 'for'")),
         };
         self.expect(Tok::From, "'from'")?;
         let start = self.parse_expr()?;
@@ -283,7 +300,7 @@ impl Parser {
     }
 
     // ── expressions (lowest to highest precedence) ─────────────
-    // or < and < not < comparison < + - < * / < unary minus < index/call/field
+    // or < and < not < comparison < + - < * / < unary minus < index/call/field/method
 
     pub fn parse_expr(&mut self) -> Result<Expr, NovaError> {
         self.parse_or()
@@ -386,9 +403,21 @@ impl Parser {
                 self.advance();
                 let name = match self.advance() {
                     Token { tok: Tok::Ident(n), .. } => n,
-                    t => return Err(NovaError::new(t.line, "expected a field name after '.'")),
+                    t => return Err(NovaError::new(t.line, "expected a field or method name after '.'")),
                 };
-                node = Expr::Field(Box::new(node), name);
+                if self.eat(&Tok::LParen) {
+                    let mut args = Vec::new();
+                    if !self.check(&Tok::RParen) {
+                        args.push(self.parse_expr()?);
+                        while self.eat(&Tok::Comma) {
+                            args.push(self.parse_expr()?);
+                        }
+                    }
+                    self.expect(Tok::RParen, "')'")?;
+                    node = Expr::MethodCall(Box::new(node), name, args);
+                } else {
+                    node = Expr::Field(Box::new(node), name);
+                }
             } else {
                 break;
             }
