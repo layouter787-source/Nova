@@ -26,6 +26,7 @@ pub enum Expr {
     Index(Box<Expr>, Box<Expr>),
     Field(Box<Expr>, String),
     Call(String, Vec<Expr>),
+    MethodCall(Box<Expr>, String, Vec<Expr>),
     Neg(Box<Expr>),
     Not(Box<Expr>),
     And(Box<Expr>, Box<Expr>),
@@ -36,6 +37,9 @@ pub enum Expr {
 #[derive(Debug)]
 pub struct FunDef {
     pub name: String,
+    /// `Some(struct_name)` for a method declared as `fun Struct.method(...)`,
+    /// `None` for a plain top-level function.
+    pub owner: Option<String>,
     pub params: Vec<String>,
     pub body: Vec<Stmt>,
 }
