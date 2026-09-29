@@ -172,6 +172,24 @@ fn struct_unknown_field_is_an_error() {
 }
 
 #[test]
+fn struct_methods() {
+    let src = "struct Point\n  x\n  y\nend\n\nfun Point.length_sq(self)\n  return self.x * self.x + self.y * self.y\nend\n\nfun Point.scale(self, k)\n  self.x = self.x * k\n  self.y = self.y * k\n  return self\nend\n\np = Point(3, 4)\nprint p.length_sq()\np.scale(2)\nprint p";
+    assert_eq!(ok(src), "25\nPoint { x: 6, y: 8 }\n");
+}
+
+#[test]
+fn method_on_non_struct_is_an_error() {
+    let e = run("x = 5\nprint x.foo()").unwrap_err();
+    assert!(e.contains("cannot call method"), "got: {}", e);
+}
+
+#[test]
+fn unknown_method_is_an_error() {
+    let e = run("struct P\n  x\nend\np = P(1)\nprint p.missing()").unwrap_err();
+    assert!(e.contains("no method 'missing'"), "got: {}", e);
+}
+
+#[test]
 fn import_defines_functions_and_structs() {
     let out = run_with_base(
         "import \"geometry.nv\"\np1 = Point(0, 0)\np2 = Point(3, 4)\nprint distance_sq(p1, p2)",
