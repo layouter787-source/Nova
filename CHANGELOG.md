@@ -1,5 +1,21 @@
 # Changelog
 
+## nova-rs v0.7.0
+
+Methods on structs.
+
+Added:
+- `fun Struct.method(self, ...) ... end` declares a method on `Struct`.
+  The receiver is passed as the method's first parameter (call it whatever
+  you like; `self` is just a convention).
+- `p.method(args)` calls it, resolved by the struct's own name at call
+  time — so `p.increment()` only looks at `Counter`'s methods if `p` is a
+  `Counter`.
+- Methods can mutate the receiver's fields (`self.value = self.value + 1`)
+  since struct values are reference-counted, so the caller sees the change.
+- Calling a method on a non-struct value, or a method the struct doesn't
+  have, is a clear runtime error instead of silently doing nothing.
+
 ## nova-rs v0.6.0
 
 Structs and modules, on top of the Rust rewrite.
