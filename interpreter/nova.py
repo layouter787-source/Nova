@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """
-Nova Language - Bootstrap Interpreter (v0.5)
+Nova Language - Bootstrap Interpreter (v0.5.1)
+
+Changelog v0.5.1:
+  - String literals now support backslash escapes (\\n \\t \\r \\" \\' \\\\),
+    matching what nova-rs already did. Previously "a\\nb" in Nova source was
+    parsed as the 4 literal characters a, backslash, n, b -- not a newline.
 
 Changelog v0.5 (correctness pass):
   - Real tokenizer + recursive-descent parser for expressions.
@@ -35,12 +40,10 @@ class NovaError(Exception):
     pass
 
 
-# ───────────────────────── Tokenizer ─────────────────────────
-
 TOKEN_SPEC = [
     ("FLOAT", r"\d+\.\d+"),
     ("INT", r"\d+"),
-    ("STRING", r'"[^"]*"|\'[^\']*\''),
+    ("STRING", r'"(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\''),
     ("EQEQ", r"=="),
     ("NEQ", r"!="),
     ("LE", r"<="),
@@ -66,6 +69,24 @@ TOKEN_SPEC = [
 
 MASTER_REGEX = re.compile("|".join(f"(?P<{name}>{pattern})" for name, pattern in TOKEN_SPEC))
 
+_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "\\": "\\", '"': '"', "'": "'"}
+
+
+def _unescape(raw: str) -> str:
+    out = []
+    j = 0
+    n = len(raw)
+    while j < n:
+        ch = raw[j]
+        if ch == "\\" and j + 1 < n:
+            nxt = raw[j + 1]
+            out.append(_ESCAPES.get(nxt, "\\" + nxt))
+            j += 2
+        else:
+            out.append(ch)
+            j += 1
+    return "".join(out)
+
 
 class Tokenizer:
     def __init__(self, text: str):
@@ -81,7 +102,7 @@ class Tokenizer:
             if kind == "MISMATCH":
                 raise NovaError(f"Unexpected character: {value!r}")
             if kind == "STRING":
-                value = value[1:-1]
+                value = _unescape(value[1:-1])
             elif kind == "INT":
                 value = int(value)
             elif kind == "FLOAT":
@@ -89,16 +110,6 @@ class Tokenizer:
             tokens.append((kind, value))
         return tokens
 
-
-# ───────────────────────── Parser ─────────────────────────
-# Produces a small tuple-based AST:
-#   ('num', v) ('str', v) ('bool', v)
-#   ('list', [nodes]) ('map', [(keynode, valnode), ...])
-#   ('var', name)
-#   ('index', containernode, indexnode)
-#   ('call', name, [argnodes])
-#   ('unary', 'MINUS', node)
-#   ('binop', kind, left, right)
 
 CMP_OPS = ("EQEQ", "NEQ", "LE", "GE", "LT", "GT")
 ADD_OPS = ("PLUS", "MINUS")
@@ -243,8 +254,6 @@ class Parser:
         return (key_node, val_node)
 
 
-# ───────────────────────── Interpreter ─────────────────────────
-
 class NovaInterpreter:
     def __init__(self):
         self.variables: Dict[str, Any] = {}
@@ -271,8 +280,6 @@ class NovaInterpreter:
     def run(self, source: str):
         lines = source.splitlines()
         self.execute_block(lines, 0, len(lines))
-
-    # ── Block execution / control flow ──────────────────────
 
     def execute_block(self, lines: List[str], start: int, end: int) -> int:
         i = start
@@ -398,7 +405,6 @@ class NovaInterpreter:
         return i + 1
 
     def collect_block(self, lines, start, end, label):
-        """Collect the raw lines of a block until the matching 'end'."""
         body = []
         i = start + 1
         depth = 1
@@ -413,8 +419,6 @@ class NovaInterpreter:
             body.append(lines[i])
             i += 1
         raise NovaError(f"'{label}' block is missing 'end'")
-
-    # ── Statements ───────────────────────────────────────────
 
     def execute_statement(self, line: str):
         if line.startswith("print "):
@@ -433,12 +437,9 @@ class NovaInterpreter:
             self.assign_to(target_node, value)
             return
 
-        # Bare expression statement (function call, etc.)
         self.evaluate(line)
 
     def find_assignment_index(self, line: str) -> Optional[int]:
-        """Find the position of a top-level '=' that is a plain assignment
-        (not part of ==, !=, <=, >=), skipping over strings/brackets."""
         depth = 0
         in_string = False
         string_char = None
@@ -477,8 +478,6 @@ class NovaInterpreter:
                 raise NovaError(f"Cannot assign to index {index} of {self.stringify(container)}")
             return
         raise NovaError("Invalid assignment target")
-
-    # ── Expressions ──────────────────────────────────────────
 
     def parse(self, expr: str):
         tokens = Tokenizer(expr).tokenize()
@@ -581,8 +580,6 @@ class NovaInterpreter:
         finally:
             self.variables = old_vars
 
-    # ── Value rendering ──────────────────────────────────────
-
     def stringify(self, value: Any) -> str:
         if isinstance(value, bool):
             return "true" if value else "false"
@@ -593,8 +590,6 @@ class NovaInterpreter:
         if isinstance(value, dict):
             return "{" + ", ".join(f"{k}: {self.stringify(v)}" for k, v in value.items()) + "}"
         return str(value)
-
-    # ── Built-ins ──────────────────────────────────────────
 
     def builtin_read_file(self, path: str) -> str:
         with open(path, "r", encoding="utf-8") as f:

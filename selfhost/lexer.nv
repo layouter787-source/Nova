@@ -1,0 +1,278 @@
+# Nova lexer, written in Nova.
+#
+# Written against the language subset the bootstrap interpreter
+# (interpreter/nova.py) understands: no 'and'/'or'/'not', no 'else if',
+# no struct/import. Those are nova-rs-only extensions (v0.6+).
+#
+# A token is a map: {"kind": <string>, "value": <value>, "line": <int>}.
+# tokenize(src) returns a list of tokens, ending with a "EOF" token.
+
+fun is_digit(c)
+  if c >= "0"
+    if c <= "9"
+      return true
+    end
+  end
+  return false
+end
+
+fun is_alpha(c)
+  if c >= "a"
+    if c <= "z"
+      return true
+    end
+  end
+  if c >= "A"
+    if c <= "Z"
+      return true
+    end
+  end
+  if c == "_"
+    return true
+  end
+  return false
+end
+
+fun is_alnum(c)
+  if is_alpha(c)
+    return true
+  end
+  if is_digit(c)
+    return true
+  end
+  return false
+end
+
+fun is_keyword(s)
+  kws = ["fun", "if", "else", "for", "from", "to", "while", "end", "return", "break", "print", "true", "false"]
+  i = 0
+  n = len(kws)
+  while i < n
+    if s == kws[i]
+      return true
+    end
+    i = i + 1
+  end
+  return false
+end
+
+fun find_char(s, ch)
+  i = 0
+  n = len(s)
+  while i < n
+    if s[i] == ch
+      return i
+    end
+    i = i + 1
+  end
+  return -1
+end
+
+fun make_token(kind, value, line)
+  return {"kind": kind, "value": value, "line": line}
+end
+
+fun tokenize(src)
+  tokens = []
+  n = len(src)
+  i = 0
+  line = 1
+
+  while i < n
+    c = src[i]
+
+    if c == " "
+      i = i + 1
+    else
+      if c == "\t"
+        i = i + 1
+      else
+        if c == "\r"
+          i = i + 1
+        else
+          if c == "\n"
+            add_newline = true
+            if len(tokens) == 0
+              add_newline = false
+            else
+              last = tokens[len(tokens) - 1]
+              if last["kind"] == "NEWLINE"
+                add_newline = false
+              end
+            end
+            if add_newline
+              append(tokens, make_token("NEWLINE", "\n", line))
+            end
+            line = line + 1
+            i = i + 1
+          else
+            if c == "#"
+              while i < n
+                if src[i] == "\n"
+                  break
+                end
+                i = i + 1
+              end
+            else
+              is_quote = false
+              if c == "\""
+                is_quote = true
+              end
+              if c == "'"
+                is_quote = true
+              end
+              if is_quote
+                quote_char = c
+                start_line = line
+                i = i + 1
+                s = ""
+                while i < n
+                  ch = src[i]
+                  if ch == quote_char
+                    i = i + 1
+                    break
+                  else
+                    if ch == "\\"
+                      i = i + 1
+                      if i < n
+                        esc = src[i]
+                        if esc == "n"
+                          s = s + "\n"
+                        else
+                          if esc == "t"
+                            s = s + "\t"
+                          else
+                            if esc == "r"
+                              s = s + "\r"
+                            else
+                              if esc == "\""
+                                s = s + "\""
+                              else
+                                if esc == "'"
+                                  s = s + "'"
+                                else
+                                  if esc == "\\"
+                                    s = s + "\\"
+                                  else
+                                    s = s + esc
+                                  end
+                                end
+                              end
+                            end
+                          end
+                        end
+                        i = i + 1
+                      end
+                    else
+                      if ch == "\n"
+                        line = line + 1
+                      end
+                      s = s + ch
+                      i = i + 1
+                    end
+                  end
+                end
+                append(tokens, make_token("STRING", s, start_line))
+              else
+                if is_digit(c)
+                  start_line = line
+                  numstr = ""
+                  while i < n
+                    if is_digit(src[i])
+                      numstr = numstr + src[i]
+                      i = i + 1
+                    else
+                      break
+                    end
+                  end
+                  is_float = false
+                  if i < n
+                    if src[i] == "."
+                      if i + 1 < n
+                        if is_digit(src[i + 1])
+                          is_float = true
+                          numstr = numstr + "."
+                          i = i + 1
+                          while i < n
+                            if is_digit(src[i])
+                              numstr = numstr + src[i]
+                              i = i + 1
+                            else
+                              break
+                            end
+                          end
+                        end
+                      end
+                    end
+                  end
+                  if is_float
+                    append(tokens, make_token("FLOAT", float(numstr), start_line))
+                  else
+                    append(tokens, make_token("INT", int(numstr), start_line))
+                  end
+                else
+                  if is_alpha(c)
+                    start_line = line
+                    name = ""
+                    while i < n
+                      if is_alnum(src[i])
+                        name = name + src[i]
+                        i = i + 1
+                      else
+                        break
+                      end
+                    end
+                    if is_keyword(name)
+                      append(tokens, make_token(name, name, start_line))
+                    else
+                      append(tokens, make_token("IDENT", name, start_line))
+                    end
+                  else
+                    two = ""
+                    if i + 1 < n
+                      two = c + src[i + 1]
+                    end
+
+                    if two == "=="
+                      append(tokens, make_token("==", "==", line))
+                      i = i + 2
+                    else
+                      if two == "!="
+                        append(tokens, make_token("!=", "!=", line))
+                        i = i + 2
+                      else
+                        if two == "<="
+                          append(tokens, make_token("<=", "<=", line))
+                          i = i + 2
+                        else
+                          if two == ">="
+                            append(tokens, make_token(">=", ">=", line))
+                            i = i + 2
+                          else
+                            single_ops = "+-*/()[]{},:.=<>"
+                            pos = find_char(single_ops, c)
+                            if pos >= 0
+                              append(tokens, make_token(c, c, line))
+                              i = i + 1
+                            else
+                              print "Lexer error: unexpected character:"
+                              print c
+                              i = i + 1
+                            end
+                          end
+                        end
+                      end
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+
+  append(tokens, make_token("EOF", "", line))
+  return tokens
+end
