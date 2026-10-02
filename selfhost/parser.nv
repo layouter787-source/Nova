@@ -1,0 +1,495 @@
+# Nova parser, written in Nova.
+#
+# Consumes the token list produced by lexer.nv and builds an AST out of
+# plain Nova maps/lists (Nova has no sum types / classes in this subset,
+# so every node is {"kind": <string>, ...fields}).
+#
+# Parser state is a MAP {"tokens": [...], "pos": <int>}. It has to be a
+# map (not a plain int variable) because assigning to a plain variable
+# inside a function never writes back to the caller's variable in this
+# language -- only mutating a shared list/map (via append or index
+# assignment) is visible to the caller. state["pos"] = ... is an index
+# assignment, so it works as a mutable cursor shared across calls.
+#
+# Expression nodes:
+#   {"kind": "num", "value": v}
+#   {"kind": "str", "value": v}
+#   {"kind": "bool", "value": v}
+#   {"kind": "nullexpr"}                           # bare 'return' with no value
+#   {"kind": "list", "items": [node, ...]}
+#   {"kind": "map", "pairs": [[keynode, valnode], ...]}
+#   {"kind": "var", "name": s}
+#   {"kind": "index", "container": node, "index": node}
+#   {"kind": "call", "name": s, "args": [node, ...]}
+#   {"kind": "neg", "expr": node}
+#   {"kind": "binop", "op": "==|!=|<=|>=|<|>|+|-|*|/", "left": node, "right": node}
+#
+# Statement nodes:
+#   {"kind": "print", "expr": node}
+#   {"kind": "assign", "target": node, "value": node}
+#   {"kind": "exprstmt", "expr": node}
+#   {"kind": "if", "cond": node, "then": [stmt, ...], "else": [stmt, ...]}
+#   {"kind": "for", "var": s, "start": node, "end": node, "body": [stmt, ...]}
+#   {"kind": "while", "cond": node, "body": [stmt, ...]}
+#   {"kind": "fun", "name": s, "params": [s, ...], "body": [stmt, ...]}
+#   {"kind": "return", "expr": node}                # node is 'nullexpr' for bare return
+#   {"kind": "break"}
+#
+# parse(tokens) returns the list of top-level statement nodes.
+
+fun null_node()
+  return {"kind": "nullexpr"}
+end
+
+# ── token cursor ──────────────────────────────────────────────
+
+fun peek(state)
+  toks = state["tokens"]
+  p = state["pos"]
+  if p < len(toks)
+    return toks[p]
+  end
+  return {"kind": "EOF", "value": "", "line": 0}
+end
+
+fun peek_kind(state)
+  t = peek(state)
+  return t["kind"]
+end
+
+fun peek_next_kind(state)
+  toks = state["tokens"]
+  idx = state["pos"] + 1
+  if idx < len(toks)
+    t = toks[idx]
+    return t["kind"]
+  end
+  return "EOF"
+end
+
+fun advance(state)
+  t = peek(state)
+  toks = state["tokens"]
+  if state["pos"] < len(toks)
+    state["pos"] = state["pos"] + 1
+  end
+  return t
+end
+
+fun check(state, kind)
+  return peek_kind(state) == kind
+end
+
+fun eat(state, kind)
+  if check(state, kind)
+    advance(state)
+    return true
+  end
+  return false
+end
+
+fun expect(state, kind)
+  if check(state, kind)
+    return advance(state)
+  end
+  print "Parse error: expected"
+  print kind
+  print "but got"
+  print peek_kind(state)
+  return advance(state)
+end
+
+fun skip_newlines(state)
+  while check(state, "NEWLINE")
+    advance(state)
+  end
+end
+
+fun at_stmt_end(state)
+  k = peek_kind(state)
+  if k == "NEWLINE"
+    return true
+  end
+  if k == "EOF"
+    return true
+  end
+  return false
+end
+
+# ── expressions (lowest to highest precedence) ──────────────────
+# equality < additive < multiplicative < unary minus < postfix (index) < primary
+
+fun parse_expr(state)
+  return parse_equality(state)
+end
+
+fun parse_equality(state)
+  left = parse_additive(state)
+  cont = true
+  while cont
+    k = peek_kind(state)
+    is_cmp = false
+    if k == "=="
+      is_cmp = true
+    end
+    if k == "!="
+      is_cmp = true
+    end
+    if k == "<="
+      is_cmp = true
+    end
+    if k == ">="
+      is_cmp = true
+    end
+    if k == "<"
+      is_cmp = true
+    end
+    if k == ">"
+      is_cmp = true
+    end
+    if is_cmp
+      advance(state)
+      right = parse_additive(state)
+      left = {"kind": "binop", "op": k, "left": left, "right": right}
+    else
+      cont = false
+    end
+  end
+  return left
+end
+
+fun parse_additive(state)
+  left = parse_multiplicative(state)
+  cont = true
+  while cont
+    k = peek_kind(state)
+    if k == "+"
+      advance(state)
+      right = parse_multiplicative(state)
+      left = {"kind": "binop", "op": "+", "left": left, "right": right}
+    else
+      if k == "-"
+        advance(state)
+        right = parse_multiplicative(state)
+        left = {"kind": "binop", "op": "-", "left": left, "right": right}
+      else
+        cont = false
+      end
+    end
+  end
+  return left
+end
+
+fun parse_multiplicative(state)
+  left = parse_unary(state)
+  cont = true
+  while cont
+    k = peek_kind(state)
+    if k == "*"
+      advance(state)
+      right = parse_unary(state)
+      left = {"kind": "binop", "op": "*", "left": left, "right": right}
+    else
+      if k == "/"
+        advance(state)
+        right = parse_unary(state)
+        left = {"kind": "binop", "op": "/", "left": left, "right": right}
+      else
+        cont = false
+      end
+    end
+  end
+  return left
+end
+
+fun parse_unary(state)
+  if check(state, "-")
+    advance(state)
+    inner = parse_unary(state)
+    return {"kind": "neg", "expr": inner}
+  end
+  return parse_postfix(state)
+end
+
+fun parse_postfix(state)
+  node = parse_primary(state)
+  cont = true
+  while cont
+    if check(state, "[")
+      advance(state)
+      idx = parse_expr(state)
+      expect(state, "]")
+      node = {"kind": "index", "container": node, "index": idx}
+    else
+      cont = false
+    end
+  end
+  return node
+end
+
+fun parse_call_args(state)
+  args = []
+  if check(state, ")") == false
+    append(args, parse_expr(state))
+    while check(state, ",")
+      advance(state)
+      append(args, parse_expr(state))
+    end
+  end
+  expect(state, ")")
+  return args
+end
+
+fun parse_pair(state)
+  t = peek(state)
+  key_node = null_node()
+  if t["kind"] == "IDENT"
+    if peek_next_kind(state) == ":"
+      advance(state)
+      key_node = {"kind": "str", "value": t["value"]}
+    else
+      key_node = parse_expr(state)
+    end
+  else
+    key_node = parse_expr(state)
+  end
+  expect(state, ":")
+  val_node = parse_expr(state)
+  pair = [key_node, val_node]
+  return pair
+end
+
+fun parse_primary(state)
+  t = peek(state)
+  k = t["kind"]
+
+  if k == "INT"
+    advance(state)
+    return {"kind": "num", "value": t["value"]}
+  end
+  if k == "FLOAT"
+    advance(state)
+    return {"kind": "num", "value": t["value"]}
+  end
+  if k == "STRING"
+    advance(state)
+    return {"kind": "str", "value": t["value"]}
+  end
+  if k == "true"
+    advance(state)
+    return {"kind": "bool", "value": true}
+  end
+  if k == "false"
+    advance(state)
+    return {"kind": "bool", "value": false}
+  end
+  if k == "IDENT"
+    advance(state)
+    name = t["value"]
+    if check(state, "(")
+      advance(state)
+      args = parse_call_args(state)
+      return {"kind": "call", "name": name, "args": args}
+    end
+    return {"kind": "var", "name": name}
+  end
+  if k == "("
+    advance(state)
+    node = parse_expr(state)
+    expect(state, ")")
+    return node
+  end
+  if k == "["
+    advance(state)
+    items = []
+    if check(state, "]") == false
+      append(items, parse_expr(state))
+      while check(state, ",")
+        advance(state)
+        append(items, parse_expr(state))
+      end
+    end
+    expect(state, "]")
+    return {"kind": "list", "items": items}
+  end
+  if k == "{"
+    advance(state)
+    pairs = []
+    if check(state, "}") == false
+      append(pairs, parse_pair(state))
+      while check(state, ",")
+        advance(state)
+        append(pairs, parse_pair(state))
+      end
+    end
+    expect(state, "}")
+    return {"kind": "map", "pairs": pairs}
+  end
+
+  print "Parse error: unexpected token"
+  print k
+  advance(state)
+  return {"kind": "num", "value": 0}
+end
+
+# ── statements ───────────────────────────────────────────────
+
+fun parse_block_until(state, term_kind)
+  stmts = []
+  skip_newlines(state)
+  cont = true
+  while cont
+    if check(state, term_kind)
+      cont = false
+    else
+      if check(state, "EOF")
+        print "Parse error: block is missing 'end'"
+        cont = false
+      else
+        append(stmts, parse_stmt(state))
+        skip_newlines(state)
+      end
+    end
+  end
+  return stmts
+end
+
+fun parse_fun(state)
+  advance(state)
+  name_tok = expect(state, "IDENT")
+  name = name_tok["value"]
+  expect(state, "(")
+  params = []
+  if check(state, ")") == false
+    p0 = expect(state, "IDENT")
+    append(params, p0["value"])
+    while check(state, ",")
+      advance(state)
+      pn = expect(state, "IDENT")
+      append(params, pn["value"])
+    end
+  end
+  expect(state, ")")
+  skip_newlines(state)
+  body = parse_block_until(state, "end")
+  expect(state, "end")
+  return {"kind": "fun", "name": name, "params": params, "body": body}
+end
+
+fun parse_if(state)
+  advance(state)
+  cond = parse_expr(state)
+  skip_newlines(state)
+  then_body = []
+  cont = true
+  while cont
+    if check(state, "else")
+      cont = false
+    else
+      if check(state, "end")
+        cont = false
+      else
+        if check(state, "EOF")
+          print "Parse error: if is missing 'end'"
+          cont = false
+        else
+          append(then_body, parse_stmt(state))
+          skip_newlines(state)
+        end
+      end
+    end
+  end
+  else_body = []
+  if check(state, "else")
+    advance(state)
+    skip_newlines(state)
+    else_body = parse_block_until(state, "end")
+  end
+  expect(state, "end")
+  return {"kind": "if", "cond": cond, "then": then_body, "else": else_body}
+end
+
+fun parse_for(state)
+  advance(state)
+  name_tok = expect(state, "IDENT")
+  var_name = name_tok["value"]
+  expect(state, "from")
+  start_expr = parse_expr(state)
+  expect(state, "to")
+  end_expr = parse_expr(state)
+  skip_newlines(state)
+  body = parse_block_until(state, "end")
+  expect(state, "end")
+  return {"kind": "for", "var": var_name, "start": start_expr, "end": end_expr, "body": body}
+end
+
+fun parse_while(state)
+  advance(state)
+  cond = parse_expr(state)
+  skip_newlines(state)
+  body = parse_block_until(state, "end")
+  expect(state, "end")
+  return {"kind": "while", "cond": cond, "body": body}
+end
+
+fun parse_stmt(state)
+  k = peek_kind(state)
+
+  if k == "fun"
+    return parse_fun(state)
+  end
+  if k == "if"
+    return parse_if(state)
+  end
+  if k == "for"
+    return parse_for(state)
+  end
+  if k == "while"
+    return parse_while(state)
+  end
+  if k == "return"
+    advance(state)
+    if at_stmt_end(state)
+      return {"kind": "return", "expr": null_node()}
+    end
+    e = parse_expr(state)
+    return {"kind": "return", "expr": e}
+  end
+  if k == "break"
+    advance(state)
+    return {"kind": "break"}
+  end
+  if k == "print"
+    advance(state)
+    e = parse_expr(state)
+    return {"kind": "print", "expr": e}
+  end
+
+  e = parse_expr(state)
+  if check(state, "=")
+    advance(state)
+    v = parse_expr(state)
+    return {"kind": "assign", "target": e, "value": v}
+  end
+  return {"kind": "exprstmt", "expr": e}
+end
+
+fun parse_program(state)
+  stmts = []
+  skip_newlines(state)
+  while check(state, "EOF") == false
+    if check(state, "end")
+      print "Parse error: unexpected 'end'"
+      advance(state)
+    else
+      append(stmts, parse_stmt(state))
+    end
+    skip_newlines(state)
+  end
+  return stmts
+end
+
+fun parse(tokens)
+  state = {"tokens": tokens, "pos": 0}
+  return parse_program(state)
+end
