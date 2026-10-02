@@ -1,0 +1,532 @@
+# Nova interpreter, written in Nova.
+#
+# Walks the AST produced by parser.nv and executes it.
+#
+# Two language-shaped obstacles this file works around:
+#
+# 1. No closures / no object identity for plain variables: assigning to a
+#    plain variable inside a function never writes back to the caller's
+#    variable. So the call stack ("frames") and the parser-style cursor
+#    pattern both have to live inside a MAP (passed around as `rt`),
+#    because index-assignment on a shared map/list IS visible to the
+#    caller -- see lexer.nv/parser.nv for the same trick.
+#
+# 2. No try/catch, and indexing a map with a missing key is a fatal error
+#    that exits the whole program (uncatchable from Nova code). So a
+#    normal map can't be used as an "environment" with an existence
+#    check -- there is no safe way to ask "is this key present" before
+#    indexing. Variable scopes ("frames") are therefore association
+#    lists: plain lists of [name, value] pairs, scanned linearly via
+#    frame_get/frame_has/frame_set. Slower than a real map, but safe.
+#
+# Known limitation: because Nova has no try/catch, a runtime error in the
+# *interpreted* program (e.g. indexing past the end of a list) currently
+# crashes this interpreter itself instead of being reported as a clean
+# error to the interpreted program's own user. Fixing that is blocked on
+# Nova gaining a try/catch construct -- a feature this self-hosting
+# effort has already motivated once (see the v0.5.1 string-escape fix
+# this same project needed before lexer.nv could even be tested).
+
+fun make_null()
+  return
+end
+
+# ── association-list "frames" (see note 2 above) ────────────────
+
+fun frame_get(frame, name)
+  i = 0
+  n = len(frame)
+  while i < n
+    pair = frame[i]
+    if pair[0] == name
+      return pair[1]
+    end
+    i = i + 1
+  end
+  return make_null()
+end
+
+fun frame_has(frame, name)
+  i = 0
+  n = len(frame)
+  while i < n
+    pair = frame[i]
+    if pair[0] == name
+      return true
+    end
+    i = i + 1
+  end
+  return false
+end
+
+fun frame_set(frame, name, value)
+  i = 0
+  n = len(frame)
+  while i < n
+    pair = frame[i]
+    if pair[0] == name
+      pair[1] = value
+      return make_null()
+    end
+    i = i + 1
+  end
+  append(frame, [name, value])
+  return make_null()
+end
+
+# ── runtime state ────────────────────────────────────────────────
+# rt = {"frames": [frame, ...], "current": <index into frames>, "functions": [[name, fundef], ...]}
+# frames[0] is the global frame. Calling a function pushes a new frame
+# and points "current" at it; returning restores the caller's index.
+# (Frames are never removed from the list, only abandoned -- so deep
+# recursion grows memory. Fine for a bootstrap-stage demo interpreter.)
+
+fun make_rt()
+  rt = {}
+  rt["frames"] = [[]]
+  rt["current"] = 0
+  rt["functions"] = []
+  return rt
+end
+
+fun get_var(rt, name)
+  frames = rt["frames"]
+  cur = frames[rt["current"]]
+  if frame_has(cur, name)
+    return frame_get(cur, name)
+  end
+  glob = frames[0]
+  if frame_has(glob, name)
+    return frame_get(glob, name)
+  end
+  print "Runtime error: Undefined variable:"
+  print name
+  return make_null()
+end
+
+fun set_var(rt, name, value)
+  frames = rt["frames"]
+  cur = frames[rt["current"]]
+  frame_set(cur, name, value)
+end
+
+fun find_function(rt, name)
+  funcs = rt["functions"]
+  i = 0
+  n = len(funcs)
+  while i < n
+    entry = funcs[i]
+    if entry[0] == name
+      return entry[1]
+    end
+    i = i + 1
+  end
+  return make_null()
+end
+
+fun has_function(rt, name)
+  funcs = rt["functions"]
+  i = 0
+  n = len(funcs)
+  while i < n
+    entry = funcs[i]
+    if entry[0] == name
+      return true
+    end
+    i = i + 1
+  end
+  return false
+end
+
+# ── truthiness (if/while accept any value, not just booleans) ───
+
+fun truthy(v)
+  t = type(v)
+  if t == "bool"
+    return v
+  end
+  if t == "int"
+    return v != 0
+  end
+  if t == "float"
+    return v != 0.0
+  end
+  if t == "string"
+    return len(v) > 0
+  end
+  if t == "list"
+    return len(v) > 0
+  end
+  if t == "map"
+    return len(v) > 0
+  end
+  return false
+end
+
+# ── builtins (delegate straight to the host's own builtins) ─────
+
+fun is_builtin(name)
+  names = ["len", "str", "int", "float", "append", "split", "join", "type", "read_file"]
+  i = 0
+  n = len(names)
+  while i < n
+    if name == names[i]
+      return true
+    end
+    i = i + 1
+  end
+  return false
+end
+
+fun call_builtin(name, args)
+  if name == "len"
+    return len(args[0])
+  end
+  if name == "str"
+    return str(args[0])
+  end
+  if name == "int"
+    return int(args[0])
+  end
+  if name == "float"
+    return float(args[0])
+  end
+  if name == "append"
+    return append(args[0], args[1])
+  end
+  if name == "split"
+    if len(args) == 1
+      return split(args[0])
+    end
+    return split(args[0], args[1])
+  end
+  if name == "join"
+    if len(args) == 1
+      return join(args[0])
+    end
+    return join(args[0], args[1])
+  end
+  if name == "type"
+    return type(args[0])
+  end
+  if name == "read_file"
+    return read_file(args[0])
+  end
+  print "Runtime error: unknown builtin:"
+  print name
+  return make_null()
+end
+
+# ── expressions ───────────────────────────────────────────────
+
+fun apply_binop(op, l, r)
+  if op == "+"
+    if type(l) == "string"
+      return str(l) + str(r)
+    end
+    if type(r) == "string"
+      return str(l) + str(r)
+    end
+    return l + r
+  end
+  if op == "-"
+    return l - r
+  end
+  if op == "*"
+    return l * r
+  end
+  if op == "/"
+    return l / r
+  end
+  if op == "=="
+    return l == r
+  end
+  if op == "!="
+    return l != r
+  end
+  if op == "<="
+    return l <= r
+  end
+  if op == ">="
+    return l >= r
+  end
+  if op == "<"
+    return l < r
+  end
+  if op == ">"
+    return l > r
+  end
+  print "Runtime error: unknown operator:"
+  print op
+  return make_null()
+end
+
+fun eval_args(rt, arg_nodes)
+  args = []
+  i = 0
+  n = len(arg_nodes)
+  while i < n
+    append(args, eval_expr(rt, arg_nodes[i]))
+    i = i + 1
+  end
+  return args
+end
+
+fun call_function(rt, fdef, args)
+  params = fdef["params"]
+  if len(params) != len(args)
+    print "Runtime error: wrong number of arguments calling"
+    print fdef["name"]
+    return make_null()
+  end
+
+  new_frame = []
+  i = 0
+  n = len(params)
+  while i < n
+    append(new_frame, [params[i], args[i]])
+    i = i + 1
+  end
+
+  frames = rt["frames"]
+  append(frames, new_frame)
+  old_current = rt["current"]
+  rt["current"] = len(frames) - 1
+
+  flow = exec_block(rt, fdef["body"])
+
+  rt["current"] = old_current
+
+  if flow["kind"] == "return"
+    return flow["value"]
+  end
+  return make_null()
+end
+
+fun eval_call(rt, node)
+  name = node["name"]
+  args = eval_args(rt, node["args"])
+
+  if is_builtin(name)
+    return call_builtin(name, args)
+  end
+  if has_function(rt, name)
+    fdef = find_function(rt, name)
+    return call_function(rt, fdef, args)
+  end
+
+  print "Runtime error: unknown function:"
+  print name
+  return make_null()
+end
+
+fun eval_expr(rt, node)
+  k = node["kind"]
+
+  if k == "num"
+    return node["value"]
+  end
+  if k == "str"
+    return node["value"]
+  end
+  if k == "bool"
+    return node["value"]
+  end
+  if k == "nullexpr"
+    return make_null()
+  end
+  if k == "list"
+    items = node["items"]
+    result = []
+    i = 0
+    n = len(items)
+    while i < n
+      append(result, eval_expr(rt, items[i]))
+      i = i + 1
+    end
+    return result
+  end
+  if k == "map"
+    pairs = node["pairs"]
+    result = {}
+    i = 0
+    n = len(pairs)
+    while i < n
+      pair = pairs[i]
+      kv = eval_expr(rt, pair[0])
+      vv = eval_expr(rt, pair[1])
+      result[kv] = vv
+      i = i + 1
+    end
+    return result
+  end
+  if k == "var"
+    return get_var(rt, node["name"])
+  end
+  if k == "index"
+    container = eval_expr(rt, node["container"])
+    idx = eval_expr(rt, node["index"])
+    return container[idx]
+  end
+  if k == "neg"
+    return -eval_expr(rt, node["expr"])
+  end
+  if k == "call"
+    return eval_call(rt, node)
+  end
+  if k == "binop"
+    l = eval_expr(rt, node["left"])
+    r = eval_expr(rt, node["right"])
+    return apply_binop(node["op"], l, r)
+  end
+
+  print "Runtime error: unknown expression kind:"
+  print k
+  return make_null()
+end
+
+# ── statements ───────────────────────────────────────────────
+# "flow" is {"kind": "normal"} | {"kind": "break"} | {"kind": "return", "value": v}
+
+fun flow_normal()
+  return {"kind": "normal"}
+end
+
+fun flow_break()
+  return {"kind": "break"}
+end
+
+fun flow_return(v)
+  return {"kind": "return", "value": v}
+end
+
+fun exec_assign(rt, node)
+  v = eval_expr(rt, node["value"])
+  target = node["target"]
+  if target["kind"] == "var"
+    set_var(rt, target["name"], v)
+  else
+    container = eval_expr(rt, target["container"])
+    idx = eval_expr(rt, target["index"])
+    container[idx] = v
+  end
+end
+
+fun exec_for(rt, node)
+  var_name = node["var"]
+  i = eval_expr(rt, node["start"])
+  end_v = eval_expr(rt, node["end"])
+  result_flow = flow_normal()
+  looping = true
+  while looping
+    if i > end_v
+      looping = false
+    else
+      set_var(rt, var_name, i)
+      flow = exec_block(rt, node["body"])
+      if flow["kind"] == "break"
+        looping = false
+      else
+        if flow["kind"] == "return"
+          result_flow = flow
+          looping = false
+        else
+          i = i + 1
+        end
+      end
+    end
+  end
+  return result_flow
+end
+
+fun exec_while(rt, node)
+  result_flow = flow_normal()
+  looping = true
+  while looping
+    cond = eval_expr(rt, node["cond"])
+    if truthy(cond) == false
+      looping = false
+    else
+      flow = exec_block(rt, node["body"])
+      if flow["kind"] == "break"
+        looping = false
+      else
+        if flow["kind"] == "return"
+          result_flow = flow
+          looping = false
+        end
+      end
+    end
+  end
+  return result_flow
+end
+
+fun exec_stmt(rt, node)
+  k = node["kind"]
+
+  if k == "print"
+    print eval_expr(rt, node["expr"])
+    return flow_normal()
+  end
+  if k == "assign"
+    exec_assign(rt, node)
+    return flow_normal()
+  end
+  if k == "exprstmt"
+    eval_expr(rt, node["expr"])
+    return flow_normal()
+  end
+  if k == "if"
+    cond = eval_expr(rt, node["cond"])
+    if truthy(cond)
+      return exec_block(rt, node["then"])
+    end
+    return exec_block(rt, node["else"])
+  end
+  if k == "for"
+    return exec_for(rt, node)
+  end
+  if k == "while"
+    return exec_while(rt, node)
+  end
+  if k == "fun"
+    append(rt["functions"], [node["name"], node])
+    return flow_normal()
+  end
+  if k == "return"
+    return flow_return(eval_expr(rt, node["expr"]))
+  end
+  if k == "break"
+    return flow_break()
+  end
+
+  print "Runtime error: unknown statement kind:"
+  print k
+  return flow_normal()
+end
+
+fun exec_block(rt, stmts)
+  i = 0
+  n = len(stmts)
+  flow = flow_normal()
+  while i < n
+    flow = exec_stmt(rt, stmts[i])
+    if flow["kind"] == "normal"
+      i = i + 1
+    else
+      return flow
+    end
+  end
+  return flow
+end
+
+# ── entry points ─────────────────────────────────────────────
+
+fun run(stmts)
+  rt = make_rt()
+  exec_block(rt, stmts)
+end
+
+fun interpret(src)
+  run(parse(tokenize(src)))
+end
